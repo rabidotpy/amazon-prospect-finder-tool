@@ -346,8 +346,8 @@ def resolve_web(rec, use_enrich):
                        "snippet": c.get("snippet", "")} for c in cands]
         products = ai_resolve.product_titles(rec["brand"]) if ai_resolve else []
         if ai_resolve is not None:
-            site, why, ok = ai_resolve.verify_website(
-                rec["brand"], products, cand_dicts)
+            site, why = ai_resolve.verify_website(rec["brand"], products, cand_dicts)
+            ok = not ai_resolve.ai_failed(why)   # AI actually ran (picked or abstained)
         else:
             site, why, ok = None, "ai_resolve missing", False
 

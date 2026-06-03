@@ -99,27 +99,35 @@ def _ask(skill, payload, timeout=120):
 
 # ----------------------------------------------------------------- decisions
 
+# Sentinel returned as the `why` when the AI call could not be made (CLI missing /
+# 401 / timeout). Callers that need to tell 'AI failed' from 'AI said no site'
+# compare against this; plain callers just see (None, <sentinel>) and abstain.
+AI_UNAVAILABLE = "__ai_unavailable__"
+
+
+def ai_failed(why):
+    """True if a (site, why) result means the AI call itself failed (vs abstained)."""
+    return why == AI_UNAVAILABLE
+
+
 def verify_website(brand, products, candidates):
-    """candidates: [{"domain","title","snippet"}].
-    Returns (domain_or_None, why, ok) where:
-      ok=False  -> the AI call FAILED (CLI missing/401/timeout). Caller should
-                   fall back, NOT treat as 'no website'.
-      ok=True, domain=None -> AI ran and confidently abstained (no real site).
-      ok=True, domain=str  -> AI picked the brand's real site."""
+    """candidates: [{"domain","title","snippet"}]. Returns (domain, why) or
+    (None, why). When the AI call fails, why == AI_UNAVAILABLE so callers can
+    distinguish an outage from a confident 'no site'."""
     if not candidates:
-        return None, "no candidates", True
+        return None, "no candidates"
     data = _ask("meta-website-verify", {
         "brand": brand,
         "products": products[:15],
         "candidates": candidates[:6],
     })
     if data is None:
-        return None, "ai-unavailable", False
+        return None, AI_UNAVAILABLE
     site = (data.get("website") or "").strip()
     why = (data.get("why") or "").strip()
     if not site or site.upper() == "UNKNOWN" or data.get("confidence") == "none":
-        return None, why or "unconfirmed", True
-    return site, why, True
+        return None, why or "unconfirmed"
+    return site, why
 
 
 def choose_click(brand, elements):

@@ -266,9 +266,10 @@ def ai_live():
         return False, f"ai_resolve import failed: {e}"
     if not ai_resolve.available():
         return False, "claude CLI or meta-website-verify skill not found"
-    _, _, ok = ai_resolve.verify_website(
+    _, why = ai_resolve.verify_website(
         "ProbeBrand", ["probe product"],
         [{"domain": "example.com", "title": "", "snippet": ""}])
+    ok = not ai_resolve.ai_failed(why)
     return (ok, "ok" if ok else "claude -p failed (likely 401/unauthenticated)")
 
 

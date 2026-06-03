@@ -169,6 +169,12 @@ def render_brands_tab(bdf, products):
         st.warning("No brands match these filters.")
         return
     bdf = bdf.copy()
+    # website_url is stored as a bare domain (e.g. "nutricost.com"); LinkColumn
+    # only opens a real URL, so prefix the scheme for display.
+    if "website_url" in bdf.columns:
+        bdf["website_url"] = bdf["website_url"].fillna("").map(
+            lambda u: "" if not str(u).strip()
+            else (u if str(u).startswith("http") else "https://" + str(u)))
     bdf["needs_scan"] = bdf.apply(lambda r: ", ".join(_stale_signals(r)) or "—", axis=1)
     need_keys = bdf.loc[bdf["needs_scan"] != "—", "brand_key"].tolist()
 
