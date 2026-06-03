@@ -42,6 +42,12 @@ def claude_bin():
     return default if os.path.exists(default) else None
 
 
+def available(skill="meta-website-verify"):
+    """True if the local claude CLI and the given skill body are both present, so
+    AI escalation will actually run (vs silently abstaining)."""
+    return bool(claude_bin()) and bool(_skill_body(skill))
+
+
 def _skill_body(name):
     """Return the SKILL.md body (YAML frontmatter stripped)."""
     if name in _SKILL_CACHE:
@@ -62,11 +68,14 @@ def _skill_body(name):
 
 def _ask(skill, payload, timeout=120):
     """Run one narrow skill: inline its SKILL.md + the JSON payload, get JSON back.
-    Returns a dict (parsed JSON) or {} on any failure / unparseable output."""
+    Returns the parsed dict, or **None** when the call could not be made / produced
+    no parseable JSON (CLI missing, auth/401 error, timeout, garbage). The None vs
+    dict distinction lets callers tell 'AI failed' apart from 'AI said unknown' —
+    important so a failed call never masquerades as a confident abstention."""
     b = claude_bin()
     body = _skill_body(skill)
     if not b or not body:
-        return {}
+        return None
     prompt = (
         body
         + "\n\n---\nINPUT:\n"
@@ -78,39 +87,46 @@ def _ask(skill, payload, timeout=120):
         out = subprocess.run([b, "-p", prompt], capture_output=True, text=True,
                              timeout=timeout).stdout.strip()
     except Exception:
-        return {}
+        return None
     m = re.search(r"\{.*\}", out, re.S)
     if not m:
-        return {}
+        return None
     try:
         return json.loads(m.group(0))
     except Exception:
-        return {}
+        return None
 
 
 # ----------------------------------------------------------------- decisions
 
 def verify_website(brand, products, candidates):
-    """candidates: [{"domain","title","snippet"}]. Returns (domain, why) or (None, why)."""
+    """candidates: [{"domain","title","snippet"}].
+    Returns (domain_or_None, why, ok) where:
+      ok=False  -> the AI call FAILED (CLI missing/401/timeout). Caller should
+                   fall back, NOT treat as 'no website'.
+      ok=True, domain=None -> AI ran and confidently abstained (no real site).
+      ok=True, domain=str  -> AI picked the brand's real site."""
     if not candidates:
-        return None, "no candidates"
+        return None, "no candidates", True
     data = _ask("meta-website-verify", {
         "brand": brand,
         "products": products[:15],
         "candidates": candidates[:6],
     })
+    if data is None:
+        return None, "ai-unavailable", False
     site = (data.get("website") or "").strip()
     why = (data.get("why") or "").strip()
     if not site or site.upper() == "UNKNOWN" or data.get("confidence") == "none":
-        return None, why or "unconfirmed"
-    return site, why
+        return None, why or "unconfirmed", True
+    return site, why, True
 
 
 def choose_click(brand, elements):
     """elements: [{"i","text"}]. Returns index to click, or None if no gate."""
     if not elements:
         return None
-    data = _ask("meta-interstitial-click", {"brand": brand, "elements": elements[:40]})
+    data = _ask("meta-interstitial-click", {"brand": brand, "elements": elements[:40]}) or {}
     c = data.get("click")
     return c if isinstance(c, int) else None
 
@@ -124,7 +140,7 @@ def extract_facebook(brand, hrefs, extras, footer):
         "hrefs": hrefs[:150],
         "extras": extras[:40],
         "footer": (footer or "")[:800],
-    })
+    }) or {}
     fb = (data.get("facebook") or "").strip()
     if not fb or fb.upper() == "UNKNOWN" or "facebook.com" not in fb:
         return None
@@ -141,7 +157,7 @@ def disambiguate_pages(brand, products, website, candidates):
         "products": products[:15],
         "website": website or "",
         "candidates": candidates[:15],
-    })
+    }) or {}
     choice = data.get("choice")
     why = (data.get("why") or "").strip()
     if not isinstance(choice, int) or data.get("confidence") == "none":
@@ -162,7 +178,7 @@ def disambiguate_advertisers(brand, products, domain, candidates):
         "products": products[:15],
         "domain": domain or "",
         "candidates": candidates[:15],
-    })
+    }) or {}
     choice = data.get("choice")
     why = (data.get("why") or "").strip()
     if not isinstance(choice, int) or data.get("confidence") == "none":

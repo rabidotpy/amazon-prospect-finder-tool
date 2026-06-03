@@ -44,6 +44,11 @@ except Exception:
 
 import websearch
 
+try:
+    import ai_resolve
+except Exception:
+    ai_resolve = None
+
 
 def meta_link_by_page_v2(pid):
     """Page-transparency Ad Library link (active ads, sorted by impressions)."""
@@ -322,12 +327,36 @@ def resolve_web(rec, use_enrich):
         cands = websearch.find_websites(rec["brand"], context=rec.get("example_title", ""))
         website_urls = [c["url"] for c in cands]
         if cands:
-            best = cands[0]
-            website = websearch.domain_of(best["url"])
-            src = best["source"]
-            conf = best["confidence"]
-            remarks = (f"Top candidate via {best['source']}; "
-                       f"{len(cands)} candidate(s) found.")
+            # AI-FIRST: let the meta-website-verify skill pick the brand's real
+            # site from the candidates (or abstain) using the products it sells as
+            # context. A wrong bare-name guess is worse than 'unknown', so when AI
+            # abstains we record no website rather than guessing.
+            site = None
+            ok = False
+            if ai_resolve is not None and ai_resolve.available():
+                cand_dicts = [{"domain": websearch.domain_of(c["url"]),
+                               "title": c.get("title", ""),
+                               "snippet": c.get("snippet", "")} for c in cands]
+                products = ai_resolve.product_titles(rec["brand"])
+                site, why, ok = ai_resolve.verify_website(
+                    rec["brand"], products, cand_dicts)
+            if ok and site:                         # AI picked the real site
+                website = websearch.domain_of(
+                    site if site.startswith("http") else "https://" + site) or site
+                src, conf = "ai_verified", "ai"
+                remarks = f"AI-verified from {len(cands)} candidate(s): {why}"
+            elif ok:                                # AI ran and abstained -> unknown
+                website, src, conf = "", "ai_abstain", "none"
+                remarks = f"AI abstained ({len(cands)} candidate(s)): {why}"
+            else:
+                # AI unavailable/failed -> fall back to top deterministic candidate
+                # (keep the tool working; never wipe to unknown on an AI outage).
+                best = cands[0]
+                website = websearch.domain_of(best["url"])
+                src = best["source"]
+                conf = best["confidence"]
+                remarks = (f"Top candidate via {best['source']} (no AI); "
+                           f"{len(cands)} candidate(s) found.")
         if website:
             time.sleep(h10.REQUEST_DELAY)
             socials = h10.fetch_socials(website)

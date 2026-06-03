@@ -140,7 +140,10 @@ def stale_brand_keys(conn, limit=None):
         "FROM brands ORDER BY parent_level_revenue DESC").fetchall()
     out = []
     for r in rows:
-        if (_stale(r["website_scanned_at"]) or _stale(r["meta_scanned_at"])
+        # Website is "determine once": scanned only if never resolved (no age
+        # check) — once we have a confident answer it stays put. Meta/Google still
+        # follow the 30-day freshness rule (ad counts genuinely change).
+        if (not r["website_scanned_at"] or _stale(r["meta_scanned_at"])
                 or _stale(r["google_scanned_at"])):
             out.append(r["brand_key"])
             if limit and len(out) >= limit:
@@ -149,9 +152,10 @@ def stale_brand_keys(conn, limit=None):
 
 
 def needs(row, force=False):
-    """Which signals to (re)scan for this brand row."""
+    """Which signals to (re)scan for this brand row. Website is determine-once
+    (no age check); only --force re-resolves a website we already have."""
     return {
-        "website": force or _stale(row["website_scanned_at"]),
+        "website": force or not row["website_scanned_at"],
         "meta": force or _stale(row["meta_scanned_at"]),
         "google": force or _stale(row["google_scanned_at"]),
     }
@@ -227,14 +231,60 @@ def scan_one(brand_key, force=False, headless=True, conn=None):
     return out
 
 
+def ai_live():
+    """Probe whether the claude CLI is actually authenticated (not just present).
+    Returns (ok, reason). Makes one tiny real call."""
+    try:
+        import ai_resolve
+    except Exception as e:
+        return False, f"ai_resolve import failed: {e}"
+    if not ai_resolve.available():
+        return False, "claude CLI or meta-website-verify skill not found"
+    _, _, ok = ai_resolve.verify_website(
+        "ProbeBrand", ["probe product"],
+        [{"domain": "example.com", "title": "", "snippet": ""}])
+    return (ok, "ok" if ok else "claude -p failed (likely 401/unauthenticated)")
+
+
+def reresolve_websites(conn=None, force_all=False):
+    """Queue websites for AI re-resolution by clearing website_scanned_at, so the
+    'determine once' rule re-runs them. GUARDED: aborts unless the claude CLI is
+    actually authenticated, so we never blow away good websites only to re-guess
+    them without AI. By default only re-does brands NOT already AI-verified."""
+    own = conn is None
+    if own:
+        conn = db.connect()
+        db.init_db(conn)
+    ok, reason = ai_live()
+    if not ok:
+        return {"ok": False, "reason": reason, "reset": 0}
+    if force_all:
+        cur = conn.execute("UPDATE brands SET website_scanned_at=NULL")
+    else:
+        cur = conn.execute(
+            "UPDATE brands SET website_scanned_at=NULL "
+            "WHERE COALESCE(confidence,'') <> 'ai'")
+    conn.commit()
+    return {"ok": True, "reason": "queued", "reset": cur.rowcount}
+
+
 def main():
     args = sys.argv[1:]
     if len(args) >= 2 and args[0] == "scan":
         force = "--force" in args
         out = scan_one(args[1], force=force)
         print(json.dumps(out))
+    elif args and args[0] == "ai-check":
+        ok, reason = ai_live()
+        print(json.dumps({"ai_authenticated": ok, "reason": reason}))
+        sys.exit(0 if ok else 2)
+    elif args and args[0] == "reresolve":
+        out = reresolve_websites(force_all="--all" in args)
+        print(json.dumps(out))
+        sys.exit(0 if out["ok"] else 2)
     else:
-        print("usage: python3 brand_scan.py scan <brand_key> [--force]",
+        print("usage: python3 brand_scan.py "
+              "{scan <brand_key> [--force] | ai-check | reresolve [--all]}",
               file=sys.stderr)
         sys.exit(1)
 
