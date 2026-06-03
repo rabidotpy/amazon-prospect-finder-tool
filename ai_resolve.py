@@ -141,6 +141,62 @@ def ai_failed(why):
     return why == AI_UNAVAILABLE
 
 
+_RESEARCH_PROMPT = """You find an Amazon brand's official direct-to-consumer (DTC) website.
+You MAY use web search and fetch tools to look it up and verify it.
+
+Brand: {brand}
+Products this brand sells (context to confirm the right company):
+{products}
+
+Task:
+1. Search the web for this brand's OWN official online store.
+2. It must be the brand's own site — NOT Amazon, NOT a marketplace/retailer
+   (Walmart, iHerb, eBay…), NOT a parked or for-sale/registrar lander, NOT a
+   different company that merely shares the name.
+3. Confirm the site actually sells the kind of products listed above under THIS
+   brand. The products disambiguate same-name companies.
+4. If the brand has no real DTC site, or you cannot confirm one with high
+   confidence, answer UNKNOWN. A wrong site is worse than none.
+
+Output ONLY one line of compact JSON, nothing else:
+{{"website":"domain.com","confidence":"high","why":"short reason"}}
+or
+{{"website":"UNKNOWN","confidence":"none","why":"short reason"}}"""
+
+
+def research_website(brand, products, timeout=200):
+    """Open-ended AI website finder: hands the model ONLY the brand + product
+    context and lets it search/verify the real DTC site itself (no fixed choice
+    list). Returns (domain, why) or (None, why); why == AI_UNAVAILABLE on failure.
+    Read-only web tools only."""
+    b = claude_bin()
+    if not b:
+        return None, AI_UNAVAILABLE
+    prompt = _RESEARCH_PROMPT.format(
+        brand=brand, products=json.dumps((products or [])[:15], ensure_ascii=False))
+    try:
+        out = subprocess.run(
+            [b, "-p", "--allowedTools", "WebSearch", "WebFetch",
+             "--disallowedTools", "Bash", "Write", "Edit",
+             "--permission-mode", "bypassPermissions", prompt],
+            capture_output=True, text=True, timeout=timeout,
+            env=_claude_env()).stdout
+    except Exception:
+        return None, AI_UNAVAILABLE
+    m = re.search(r"\{[^{}]*\"website\"[^{}]*\}", out, re.S) or re.search(r"\{.*\}", out, re.S)
+    if not m:
+        return None, AI_UNAVAILABLE
+    try:
+        data = json.loads(m.group(0))
+    except Exception:
+        return None, "unparseable"
+    site = (data.get("website") or "").strip()
+    why = (data.get("why") or "").strip()
+    if not site or site.upper() == "UNKNOWN" or data.get("confidence") == "none":
+        return None, why or "unconfirmed"
+    return site, why
+
+
 def verify_website(brand, products, candidates):
     """candidates: [{"domain","title","snippet"}]. Returns (domain, why) or
     (None, why). When the AI call fails, why == AI_UNAVAILABLE so callers can

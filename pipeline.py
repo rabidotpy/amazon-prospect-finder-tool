@@ -338,32 +338,35 @@ def resolve_web(rec, use_enrich):
     remarks = ""
     resolved = True            # nothing to decide unless we actually search
     if use_enrich:
-        cands = websearch.find_websites(rec["brand"], context=rec.get("example_title", ""))
-        website_urls = [c["url"] for c in cands]   # deterministic CONTEXT for AI
-
-        cand_dicts = [{"domain": websearch.domain_of(c["url"]),
-                       "title": c.get("title", ""),
-                       "snippet": c.get("snippet", "")} for c in cands]
+        # AI RESEARCHES the site itself from brand + product context (web search),
+        # rather than picking from a deterministic candidate menu — the menu could
+        # omit the real site entirely. Product titles disambiguate same-name firms.
         products = ai_resolve.product_titles(rec["brand"]) if ai_resolve else []
         if ai_resolve is not None:
-            site, why = ai_resolve.verify_website(rec["brand"], products, cand_dicts)
-            ok = not ai_resolve.ai_failed(why)   # AI actually ran (picked or abstained)
+            site, why = ai_resolve.research_website(rec["brand"], products)
+            ok = not ai_resolve.ai_failed(why)
         else:
             site, why, ok = None, "ai_resolve missing", False
 
-        if ok and site:                       # AI picked the real site
-            website = websearch.domain_of(
+        if ok and site:
+            cand = websearch.domain_of(
                 site if site.startswith("http") else "https://" + site) or site
-            src, conf = "ai_verified", "ai"
-            remarks = f"AI-verified from {len(cands)} candidate(s): {why}"
-        elif ok:                              # AI ran and confidently found none
+            # Deterministic safety net: reject if the AI's pick is a parked/for-sale
+            # lander after all.
+            if websearch.probe(cand, websearch.compact(cand.split(".")[0])) is None:
+                website, src, conf = "", "ai_parked_reject", "none"
+                remarks = f"AI suggested {cand} but it is parked/for-sale; rejected."
+            else:
+                website, src, conf = cand, "ai_research", "ai"
+                website_urls = [f"https://{cand}"]
+                remarks = f"AI-researched: {why}"
+        elif ok:
             website, src, conf = "", "ai_abstain", "none"
-            remarks = f"AI: no real site ({len(cands)} candidate(s)): {why}"
-        else:                                 # AI unavailable -> leave PENDING
+            remarks = f"AI: no real DTC site found: {why}"
+        else:
             resolved = False
             website, src, conf = "", "ai_unavailable", "pending"
-            remarks = (f"AI unavailable ({why}); {len(cands)} candidate(s) "
-                       f"gathered, website left pending for retry.")
+            remarks = f"AI unavailable ({why}); website left pending for retry."
 
         if website:
             time.sleep(h10.REQUEST_DELAY)
