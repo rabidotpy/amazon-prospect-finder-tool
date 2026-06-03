@@ -132,18 +132,38 @@ def _apply_web(conn, brand_key, web):
 
 # --------------------------------------------------------------- the scan
 
+_AI_LIVE = {"ts": None, "ok": None}
+
+
+def ai_live_cached(ttl=300):
+    """ai_live() with a short cache so the worker doesn't probe claude every cycle.
+    Returns True only if the CLI is actually authenticated."""
+    now = dt.datetime.now()
+    if (_AI_LIVE["ok"] is not None and _AI_LIVE["ts"]
+            and (now - _AI_LIVE["ts"]).total_seconds() < ttl):
+        return _AI_LIVE["ok"]
+    ok, _ = ai_live()
+    _AI_LIVE["ok"], _AI_LIVE["ts"] = ok, now
+    return ok
+
+
 def stale_brand_keys(conn, limit=None):
     """Brand keys with at least one missing/stale signal, richest first (best
-    leads scanned first). Drives the background worker."""
+    leads scanned first). Drives the background worker.
+
+    Website is 'determine once' AND AI-gated: a never-resolved website only counts
+    as work when the claude CLI is actually authenticated — otherwise resolving it
+    can't progress (we refuse to write a deterministic guess), so selecting it
+    would just hot-loop. Meta/Google follow the 30-day freshness rule regardless.
+    """
     rows = conn.execute(
         "SELECT brand_key, website_scanned_at, meta_scanned_at, google_scanned_at "
         "FROM brands ORDER BY parent_level_revenue DESC").fetchall()
+    ai_ok = ai_live_cached()
     out = []
     for r in rows:
-        # Website is "determine once": scanned only if never resolved (no age
-        # check) — once we have a confident answer it stays put. Meta/Google still
-        # follow the 30-day freshness rule (ad counts genuinely change).
-        if (not r["website_scanned_at"] or _stale(r["meta_scanned_at"])
+        website_work = (not r["website_scanned_at"]) and ai_ok
+        if (website_work or _stale(r["meta_scanned_at"])
                 or _stale(r["google_scanned_at"])):
             out.append(r["brand_key"])
             if limit and len(out) >= limit:
@@ -182,17 +202,23 @@ def scan_one(brand_key, force=False, headless=True, conn=None):
         if not todo[sig]:
             out["skipped"].append(sig)
 
-    # 1) website / socials / fb_page_id (seeds the Meta fast-path)
+    # 1) website / socials / fb_page_id (seeds the Meta fast-path).
+    #    Only persisted+stamped when AI actually DECIDED (resolved=True). If AI is
+    #    unavailable the website is left PENDING — never a deterministic guess —
+    #    so the brand stays stale and is retried once AI is back.
     if todo["website"]:
         try:
             web = pipeline.resolve_web(
                 {"brand": brand, "example_title": row["example_title"] or ""},
                 use_enrich=True)
-            _apply_web(conn, brand_key, web)
-            out["did"].append("website")
-            out["website_url"] = web.get("website_url") or ""
-            row = conn.execute("SELECT * FROM brands WHERE brand_key=?",
-                               (brand_key,)).fetchone()
+            if web.get("website_resolved"):
+                _apply_web(conn, brand_key, web)   # stamps website_scanned_at
+                out["did"].append("website")
+                out["website_url"] = web.get("website_url") or ""
+                row = conn.execute("SELECT * FROM brands WHERE brand_key=?",
+                                   (brand_key,)).fetchone()
+            else:
+                out["website_status"] = "pending_ai"  # not stamped -> retried
         except Exception as e:
             out["website_error"] = str(e)
 

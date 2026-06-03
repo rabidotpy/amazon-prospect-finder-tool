@@ -314,49 +314,57 @@ def _to_cache(web):
 
 
 def resolve_web(rec, use_enrich):
-    """Deterministic-first website/socials/page_id resolution (no scraping).
+    """Website/socials/page_id resolution.
 
-    Collects MULTIPLE website candidates (website_urls) and uses the best as the
-    primary website_url for socials/Google-ads/CRM."""
+    Division of labour:
+      • DETERMINISTIC = context only. websearch.find_websites() gathers candidate
+        domains (brand-name probes + Google hits). These are NEVER taken as the
+        answer — guessing pollutes the data and forces cleanup later.
+      • AI = the decision. The meta-website-verify skill (claude CLI) picks the
+        brand's real site from the candidates using the products it sells, or
+        abstains. Only an AI decision is written.
+
+    `website_resolved` in the result says whether AI actually decided:
+      True  -> AI picked a site, or AI confidently said there is none. Persist +
+               stamp website_scanned_at (it's settled).
+      False -> AI was unavailable/unauthenticated. Persist NOTHING and DON'T stamp,
+               so the brand stays pending and is retried once AI is back. We never
+               write a deterministic guess.
+    """
     website = meta_url = google_url = fb = ig = tt = yt = ""
     page_id = meta_kind = ""
     src = conf = "skipped"
     website_urls = []
     remarks = ""
+    resolved = True            # nothing to decide unless we actually search
     if use_enrich:
         cands = websearch.find_websites(rec["brand"], context=rec.get("example_title", ""))
-        website_urls = [c["url"] for c in cands]
-        if cands:
-            # AI-FIRST: let the meta-website-verify skill pick the brand's real
-            # site from the candidates (or abstain) using the products it sells as
-            # context. A wrong bare-name guess is worse than 'unknown', so when AI
-            # abstains we record no website rather than guessing.
-            site = None
-            ok = False
-            if ai_resolve is not None and ai_resolve.available():
-                cand_dicts = [{"domain": websearch.domain_of(c["url"]),
-                               "title": c.get("title", ""),
-                               "snippet": c.get("snippet", "")} for c in cands]
-                products = ai_resolve.product_titles(rec["brand"])
-                site, why, ok = ai_resolve.verify_website(
-                    rec["brand"], products, cand_dicts)
-            if ok and site:                         # AI picked the real site
-                website = websearch.domain_of(
-                    site if site.startswith("http") else "https://" + site) or site
-                src, conf = "ai_verified", "ai"
-                remarks = f"AI-verified from {len(cands)} candidate(s): {why}"
-            elif ok:                                # AI ran and abstained -> unknown
-                website, src, conf = "", "ai_abstain", "none"
-                remarks = f"AI abstained ({len(cands)} candidate(s)): {why}"
-            else:
-                # AI unavailable/failed -> fall back to top deterministic candidate
-                # (keep the tool working; never wipe to unknown on an AI outage).
-                best = cands[0]
-                website = websearch.domain_of(best["url"])
-                src = best["source"]
-                conf = best["confidence"]
-                remarks = (f"Top candidate via {best['source']} (no AI); "
-                           f"{len(cands)} candidate(s) found.")
+        website_urls = [c["url"] for c in cands]   # deterministic CONTEXT for AI
+
+        cand_dicts = [{"domain": websearch.domain_of(c["url"]),
+                       "title": c.get("title", ""),
+                       "snippet": c.get("snippet", "")} for c in cands]
+        products = ai_resolve.product_titles(rec["brand"]) if ai_resolve else []
+        if ai_resolve is not None:
+            site, why, ok = ai_resolve.verify_website(
+                rec["brand"], products, cand_dicts)
+        else:
+            site, why, ok = None, "ai_resolve missing", False
+
+        if ok and site:                       # AI picked the real site
+            website = websearch.domain_of(
+                site if site.startswith("http") else "https://" + site) or site
+            src, conf = "ai_verified", "ai"
+            remarks = f"AI-verified from {len(cands)} candidate(s): {why}"
+        elif ok:                              # AI ran and confidently found none
+            website, src, conf = "", "ai_abstain", "none"
+            remarks = f"AI: no real site ({len(cands)} candidate(s)): {why}"
+        else:                                 # AI unavailable -> leave PENDING
+            resolved = False
+            website, src, conf = "", "ai_unavailable", "pending"
+            remarks = (f"AI unavailable ({why}); {len(cands)} candidate(s) "
+                       f"gathered, website left pending for retry.")
+
         if website:
             time.sleep(h10.REQUEST_DELAY)
             socials = h10.fetch_socials(website)
@@ -365,10 +373,8 @@ def resolve_web(rec, use_enrich):
                 time.sleep(h10.REQUEST_DELAY)
                 page_id = h10.resolve_fb_page_id(fb) or ""
             google_url = h10.google_link_by_domain(website)
-        else:
-            conf = "none"
-        meta_url = meta_link_by_page_v2(page_id) if page_id else h10.meta_link_keyword(rec["brand"])
-        meta_kind = "page_direct" if page_id else "keyword_verify"
+        meta_url = meta_link_by_page_v2(page_id) if page_id else ""
+        meta_kind = "page_direct" if page_id else ""
     return {
         "website_url": website, "website_urls": website_urls,
         "website_remarks": remarks,
@@ -376,6 +382,7 @@ def resolve_web(rec, use_enrich):
         "fb_page_id": page_id, "facebook": fb, "instagram": ig, "tiktok": tt,
         "youtube": yt, "meta_link_kind": meta_kind,
         "website_source": src, "confidence": conf,
+        "website_resolved": resolved,
     }
 
 
