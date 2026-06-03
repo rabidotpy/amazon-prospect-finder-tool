@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Amazon Prospect Qualifier",
+  "version": "0.1.0",
+  "description": "Hover an Amazon listing to get its Meta Ad Library, Google Ads Transparency, and website links.",
+  "permissions": ["activeTab"],
+  "host_permissions": [
+    "*://*.amazon.com/*",
+    "*://*.amazon.co.uk/*",
+    "*://*.amazon.ca/*",
+    "*://*.amazon.de/*",
+    "http://localhost:8765/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.amazon.com/*",
+        "*://*.amazon.co.uk/*",
+        "*://*.amazon.ca/*",
+        "*://*.amazon.de/*"
+      ],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

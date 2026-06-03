@@ -1,0 +1,115 @@
+.apq-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2147483000;
+  background: #ff9900;
+  color: #111;
+  border: none;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font: 600 12px/1.2 system-ui, sans-serif;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+.apq-badge:hover {
+  background: #ffb84d;
+}
+
+#apq-product-btn {
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  z-index: 2147483000;
+  background: #ff9900;
+  color: #111;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font: 600 13px/1.2 system-ui, sans-serif;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+#apq-panel {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  width: 320px;
+  z-index: 2147483600;
+  background: #fff;
+  color: #111;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+  font: 13px/1.4 system-ui, sans-serif;
+  overflow: hidden;
+}
+.apq-panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #232f3e;
+  color: #fff;
+  padding: 8px 12px;
+  font-weight: 600;
+}
+#apq-close {
+  background: transparent;
+  border: none;
+  color: #fff;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+#apq-body {
+  padding: 10px 12px;
+}
+.apq-brand {
+  font-weight: 700;
+  font-size: 15px;
+  margin-bottom: 8px;
+  word-break: break-word;
+}
+.apq-row {
+  display: flex;
+  gap: 8px;
+  padding: 4px 0;
+  border-top: 1px solid #f0f0f0;
+}
+.apq-k {
+  flex: 0 0 78px;
+  color: #555;
+}
+.apq-v {
+  flex: 1;
+  word-break: break-word;
+}
+a.apq-v {
+  color: #0066c0;
+  text-decoration: none;
+}
+a.apq-v:hover {
+  text-decoration: underline;
+}
+.apq-unknown .apq-v {
+  color: #999;
+  font-style: italic;
+}
+.apq-dim {
+  color: #999;
+}
+.apq-err {
+  margin-top: 8px;
+  color: #b12704;
+  font-size: 12px;
+}
+.apq-link-btn {
+  background: none;
+  border: none;
+  color: #0066c0;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
