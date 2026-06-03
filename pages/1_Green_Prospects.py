@@ -15,6 +15,7 @@ import pandas as pd
 import streamlit as st
 
 import config
+import controls
 import db
 
 st.set_page_config(page_title="Green Prospects", page_icon="🟢", layout="wide")
@@ -52,6 +53,8 @@ def _https(u):
 
 
 MAX = config.GREEN_MAX_ADS
+
+controls.render_sidebar(_conn, load_brands.clear)
 
 st.title("🟢 Green Prospects")
 st.caption(f"Proven Amazon revenue, little/no DTC presence. Defaults match the "
