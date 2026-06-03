@@ -42,6 +42,37 @@ def claude_bin():
     return default if os.path.exists(default) else None
 
 
+def _real_api_key():
+    """A real Anthropic API key from secrets.json, if the user added one."""
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "secrets.json")) as fh:
+            d = json.load(fh)
+        return (d.get("ANTHROPIC_API_KEY") or d.get("anthropic_api_key") or "").strip() or None
+    except Exception:
+        return None
+
+
+def _claude_env():
+    """Environment for the `claude` CLI subprocess.
+
+    A harness may inject ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL pointing at an
+    internal gateway; those OVERRIDE the CLI's own OAuth login and cause 401s. So:
+      • if the user supplied a real key in secrets.json -> use it (and clear the
+        proxy base url), or
+      • otherwise strip both injected vars so the CLI falls back to your OAuth
+        login (claude /login)."""
+    env = dict(os.environ)
+    key = _real_api_key()
+    if key:
+        env["ANTHROPIC_API_KEY"] = key
+        env.pop("ANTHROPIC_BASE_URL", None)
+    else:
+        env.pop("ANTHROPIC_API_KEY", None)
+        env.pop("ANTHROPIC_BASE_URL", None)
+    return env
+
+
 def available(skill="meta-website-verify"):
     """True if the local claude CLI and the given skill body are both present, so
     AI escalation will actually run (vs silently abstaining)."""
@@ -85,7 +116,7 @@ def _ask(skill, payload, timeout=120):
     )
     try:
         out = subprocess.run([b, "-p", prompt], capture_output=True, text=True,
-                             timeout=timeout).stdout.strip()
+                             timeout=timeout, env=_claude_env()).stdout.strip()
     except Exception:
         return None
     m = re.search(r"\{.*\}", out, re.S)
