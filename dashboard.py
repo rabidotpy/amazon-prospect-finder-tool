@@ -16,6 +16,7 @@ Run:  streamlit run dashboard.py
 """
 
 import sqlite3
+import time
 
 import pandas as pd
 import streamlit as st
@@ -62,17 +63,17 @@ def get_conn():
     return conn
 
 
-@st.cache_data
+@st.cache_data(ttl=30)
 def load_products():
     return pd.read_sql_query("SELECT * FROM products", get_conn())
 
 
-@st.cache_data
+@st.cache_data(ttl=30)
 def load_brands():
     return pd.read_sql_query("SELECT * FROM brands", get_conn())
 
 
-@st.cache_data
+@st.cache_data(ttl=30)
 def load_sellers():
     return pd.read_sql_query("SELECT * FROM sellers", get_conn())
 
@@ -240,13 +241,16 @@ def render_job_panel():
     if not jobs:
         return
     running = any(j.get("status") in ("queued", "running") for j in jobs)
-    head = st.columns([3, 1])
+    head = st.columns([2, 1, 1])
     head[0].markdown("##### Scan jobs")
-    if head[1].button("🔄 Refresh", key="job_refresh"):
+    auto = head[1].toggle("Auto-refresh", value=running, key="job_auto",
+                          help="Refresh this panel every few seconds while a scan runs.")
+    if head[2].button("🔄 Refresh", key="job_refresh"):
         _bust_caches()
         st.rerun()
     if running:
-        st.caption("A scan is in progress — click **Refresh** to update counts.")
+        st.caption("A scan is in progress…" + (" auto-refreshing." if auto else
+                   " toggle Auto-refresh or click Refresh to update."))
     for j in jobs:
         done, total = j.get("done", 0), j.get("total", 0)
         with st.expander(f"{j.get('status','?')} · {done}/{total} · {j.get('id','')}",
@@ -256,6 +260,10 @@ def render_job_panel():
             if j.get("results"):
                 st.dataframe(pd.DataFrame(j["results"]), use_container_width=True,
                              hide_index=True)
+    if running and auto:
+        time.sleep(3)
+        _bust_caches()
+        st.rerun()
 
 
 # ----------------------------------------------------------------- generic tabs

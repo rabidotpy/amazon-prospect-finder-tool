@@ -59,8 +59,15 @@ def meta_link_by_page_v2(pid):
 
 
 def to_float(v):
+    """Parse a number from messy export text: strips currency symbols, thousands
+    separators and stray characters ("$1,234.56" -> 1234.56). None if not numeric."""
+    if v is None:
+        return None
+    s = re.sub(r"[^0-9.\-]", "", str(v))   # keep digits, dot, sign
+    if s in ("", "-", ".", "-."):
+        return None
     try:
-        return float(str(v).replace(",", "").strip())
+        return float(s)
     except Exception:
         return None
 
@@ -104,14 +111,17 @@ def read_records(path):
 COLMAP = {
     "url": "URL", "image_url": "Image URL", "asin": "ASIN", "title": "Title",
     "brand": "Brand", "fulfillment": "Fulfillment", "category": "Category",
-    "subcategory": "Subcategory", "price": "Price", "seller": "Seller",
+    "subcategory": "Subcategory", "seller": "Seller",
     "seller_country": "Seller Country/Region",
 }
 INTCOLS = {"bsr": "BSR", "subcategory_bsr": "Subcategory BSR",
            "asin_sales": "ASIN Sales", "parent_level_sales": "Parent Level Sales",
            "review_count": "Review Count", "active_sellers": "Number of Active Sellers",
            "number_of_images": "Number of Images", "variation_count": "Variation Count"}
-FLOATCOLS = {"asin_revenue": "ASIN Revenue", "parent_level_revenue": "Parent Level Revenue",
+# `price` is parsed as a float (handles "$1,234.56" / "1,234") — a bare string
+# would land in the REAL price column as TEXT and break price filter/sort.
+FLOATCOLS = {"price": "Price",
+             "asin_revenue": "ASIN Revenue", "parent_level_revenue": "Parent Level Revenue",
              "reviews_rating": "Reviews Rating", "listing_age_months": "Listing Age (Months)"}
 
 
@@ -313,23 +323,23 @@ def _to_cache(web):
     }
 
 
-def resolve_web(rec, use_enrich):
+def resolve_web(rec, use_enrich, allow_ai=True):
     """Website/socials/page_id resolution.
 
     Division of labour:
-      • DETERMINISTIC = context only. websearch.find_websites() gathers candidate
-        domains (brand-name probes + Google hits). These are NEVER taken as the
-        answer — guessing pollutes the data and forces cleanup later.
-      • AI = the decision. The meta-website-verify skill (claude CLI) picks the
-        brand's real site from the candidates using the products it sells, or
-        abstains. Only an AI decision is written.
+      • AI RESEARCHES the site from brand + product context (web search), then
+      • DETERMINISTIC code VERIFIES it: the AI's pick must (a) pass the brand-token
+        match (`websearch.brand_domain_match`) so a different brand's same-category
+        site is rejected, and (b) not be a parked/for-sale lander. Only a verified
+        AI decision is written — guessing is never persisted.
 
-    `website_resolved` in the result says whether AI actually decided:
-      True  -> AI picked a site, or AI confidently said there is none. Persist +
-               stamp website_scanned_at (it's settled).
-      False -> AI was unavailable/unauthenticated. Persist NOTHING and DON'T stamp,
-               so the brand stays pending and is retried once AI is back. We never
-               write a deterministic guess.
+    `allow_ai=False` (revenue-gated low-value brands) skips the AI call entirely and
+    abstains, so we don't spend quota where it doesn't pay off.
+
+    `website_resolved`:
+      True  -> AI decided (picked & verified, or confidently none), or AI was
+               skipped by the revenue gate. Persist + stamp website_scanned_at.
+      False -> AI was unavailable/unauthenticated. Persist NOTHING, leave pending.
     """
     website = meta_url = google_url = fb = ig = tt = yt = ""
     page_id = meta_kind = ""
@@ -338,11 +348,10 @@ def resolve_web(rec, use_enrich):
     remarks = ""
     resolved = True            # nothing to decide unless we actually search
     if use_enrich:
-        # AI RESEARCHES the site itself from brand + product context (web search),
-        # rather than picking from a deterministic candidate menu — the menu could
-        # omit the real site entirely. Product titles disambiguate same-name firms.
-        products = ai_resolve.product_titles(rec["brand"]) if ai_resolve else []
-        if ai_resolve is not None:
+        if not allow_ai:
+            site, why, ok = None, "below revenue floor (AI skipped)", True
+        elif ai_resolve is not None:
+            products = ai_resolve.product_titles(rec["brand"])
             site, why = ai_resolve.research_website(rec["brand"], products)
             ok = not ai_resolve.ai_failed(why)
         else:
@@ -351,9 +360,12 @@ def resolve_web(rec, use_enrich):
         if ok and site:
             cand = websearch.domain_of(
                 site if site.startswith("http") else "https://" + site) or site
-            # Deterministic safety net: reject if the AI's pick is a parked/for-sale
-            # lander after all.
-            if websearch.probe(cand, websearch.compact(cand.split(".")[0])) is None:
+            # VERIFY the AI's pick before trusting it.
+            if not websearch.brand_domain_match(rec["brand"], cand):
+                website, src, conf = "", "ai_brand_mismatch", "none"
+                remarks = (f"AI suggested {cand} but it doesn't match the brand "
+                           f"'{rec['brand']}'; rejected (likely a different company).")
+            elif websearch.is_parked(cand):     # CONFIRMED parked only (not just unreachable)
                 website, src, conf = "", "ai_parked_reject", "none"
                 remarks = f"AI suggested {cand} but it is parked/for-sale; rejected."
             else:
@@ -448,6 +460,10 @@ def sync_brand_skeleton(conn):
                 "INSERT INTO brands (brand_key, " + ",".join(AGG_COLS) + ", enriched_at) "
                 "VALUES (?," + ",".join("?" for _ in AGG_COLS) + ",NULL)",
                 [bk] + [vals[c] for c in AGG_COLS])
+    # Prune brands whose key no longer appears in products (renamed/removed on
+    # re-import) so stale aggregates can't linger and feed the green list.
+    conn.execute("DELETE FROM brands WHERE brand_key NOT IN "
+                 "(SELECT DISTINCT brand_key FROM products WHERE COALESCE(brand_key,'')<>'')")
     conn.commit()
     return conn.execute(
         "SELECT COUNT(*) c FROM brands WHERE enriched_at IS NULL").fetchone()["c"]
@@ -552,12 +568,20 @@ def rebuild_sellers(conn):
                GROUP_CONCAT(DISTINCT brand) brands
         FROM products GROUP BY seller_key
     """).fetchall()
+    # GROUP_CONCAT separates with ',', which is also valid INSIDE a brand name
+    # ("Pikl, LLC. PiKL Nutrition, LLC"). Splitting on ',' would mangle the count,
+    # so we rebuild the distinct brand set per seller from a clean query instead.
+    brands_by_seller = {}
+    for sk, bn in conn.execute(
+            "SELECT DISTINCT seller_key, brand FROM products "
+            "WHERE COALESCE(brand,'')<>''"):
+        brands_by_seller.setdefault(sk, set()).add(bn)
     n = 0
     for r in rows:
         sk = r["seller_key"]
         if not sk:
             continue
-        brands = sorted(set((r["brands"] or "").split(",")))
+        brands = sorted(brands_by_seller.get(sk, set()))
         conn.execute("""INSERT OR REPLACE INTO sellers
             (seller_key, seller, seller_country, brands, brand_count, product_count,
              parent_level_revenue, parent_level_sales, avg_rating, active_sellers)
@@ -567,6 +591,9 @@ def rebuild_sellers(conn):
              int(seller_sales.get(sk, 0)), round(r["avg_rating"] or 0, 2),
              r["active_sellers"]))
         n += 1
+    # Prune sellers no longer present in products (kept in sync with re-imports).
+    conn.execute("DELETE FROM sellers WHERE seller_key NOT IN "
+                 "(SELECT DISTINCT seller_key FROM products WHERE COALESCE(seller_key,'')<>'')")
     conn.commit()
     return n
 

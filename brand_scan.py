@@ -28,6 +28,7 @@ import datetime as dt
 import json
 import sys
 
+import config
 import db
 import green
 import pipeline
@@ -147,22 +148,27 @@ def ai_live_cached(ttl=300):
     return ok
 
 
+AI_REVENUE_FLOOR = config._float("AI_REVENUE_FLOOR", 1000.0)
+
+
 def stale_brand_keys(conn, limit=None):
     """Brand keys with at least one missing/stale signal, richest first (best
     leads scanned first). Drives the background worker.
 
-    Website is 'determine once' AND AI-gated: a never-resolved website only counts
-    as work when the claude CLI is actually authenticated — otherwise resolving it
-    can't progress (we refuse to write a deterministic guess), so selecting it
-    would just hot-loop. Meta/Google follow the 30-day freshness rule regardless.
+    Website is 'determine once', AI-gated AND revenue-gated: a never-resolved
+    website only counts as work when the claude CLI is authenticated AND the brand
+    clears AI_REVENUE_FLOOR — we spend AI research only on brands worth pitching.
+    Meta/Google follow the 30-day freshness rule regardless.
     """
     rows = conn.execute(
-        "SELECT brand_key, website_scanned_at, meta_scanned_at, google_scanned_at "
+        "SELECT brand_key, parent_level_revenue, website_scanned_at, "
+        "meta_scanned_at, google_scanned_at "
         "FROM brands ORDER BY parent_level_revenue DESC").fetchall()
     ai_ok = ai_live_cached()
     out = []
     for r in rows:
-        website_work = (not r["website_scanned_at"]) and ai_ok
+        rich = (r["parent_level_revenue"] or 0) >= AI_REVENUE_FLOOR
+        website_work = (not r["website_scanned_at"]) and ai_ok and rich
         if (website_work or _stale(r["meta_scanned_at"])
                 or _stale(r["google_scanned_at"])):
             out.append(r["brand_key"])
@@ -206,11 +212,15 @@ def scan_one(brand_key, force=False, headless=True, conn=None):
     #    Only persisted+stamped when AI actually DECIDED (resolved=True). If AI is
     #    unavailable the website is left PENDING — never a deterministic guess —
     #    so the brand stays stale and is retried once AI is back.
-    if todo["website"]:
+    allow_ai = force or (row["parent_level_revenue"] or 0) >= AI_REVENUE_FLOOR
+    if todo["website"] and not allow_ai:
+        out["skipped"].append("website")          # low-value: don't spend AI research
+        out["website_status"] = "below_revenue_floor"
+    elif todo["website"]:
         try:
             web = pipeline.resolve_web(
                 {"brand": brand, "example_title": row["example_title"] or ""},
-                use_enrich=True)
+                use_enrich=True, allow_ai=allow_ai)
             if web.get("website_resolved"):
                 _apply_web(conn, brand_key, web)   # stamps website_scanned_at
                 out["did"].append("website")
