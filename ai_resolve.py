@@ -158,14 +158,26 @@ def _ask(skill, payload, timeout=120):
         + "\n\nReason from the rules above. Do not use any tools or web search. "
           "Output ONLY the single line of JSON specified — no prose, no code fence."
     )
+    import time as _t
+
+    import scan_log
+    t0 = _t.time()
     try:
         out = subprocess.run(
             [b, "-p", "--model", NARROW_MODEL, "--strict-mcp-config", prompt],
             capture_output=True, text=True, timeout=timeout,
             env=_claude_env()).stdout.strip()
     except Exception:
+        scan_log.emit("ai_call", purpose=skill, model=NARROW_MODEL, ok=False,
+                      duration_s=round(_t.time() - t0, 1), error="call failed/timeout")
         return None
-    return _last_json(out)
+    data = _last_json(out)
+    scan_log.emit("ai_call", purpose=skill, model=NARROW_MODEL,
+                  ok=data is not None, duration_s=round(_t.time() - t0, 1),
+                  prompt_chars=len(prompt),
+                  prompt_preview="INPUT: " + json.dumps(payload, ensure_ascii=False)[:700],
+                  result=(json.dumps(data, ensure_ascii=False)[:300] if data else None))
+    return data
 
 
 # ----------------------------------------------------------------- decisions
@@ -218,19 +230,38 @@ def research_website(brand, products, timeout=200, model=None):
     b = claude_bin()
     if not b:
         return None, AI_UNAVAILABLE
+    import time as _t
+
+    import scan_log
+    mdl = model or RESEARCH_MODEL
     prompt = _RESEARCH_PROMPT.format(
         brand=brand, products=json.dumps((products or [])[:15], ensure_ascii=False))
+    t0 = _t.time()
     try:
         out = subprocess.run(
-            [b, "-p", "--output-format", "json", "--model", (model or RESEARCH_MODEL),
+            [b, "-p", "--output-format", "json", "--model", mdl,
              "--allowedTools", "WebSearch", "WebFetch",
              "--disallowedTools", *_DENY_TOOLS,
              "--strict-mcp-config", prompt],
             capture_output=True, text=True, timeout=timeout,
             env=_claude_env()).stdout
     except Exception:
+        scan_log.emit("ai_call", purpose="website_research", brand=brand, model=mdl,
+                      ok=False, duration_s=round(_t.time() - t0, 1), error="failed/timeout")
         return None, AI_UNAVAILABLE
+    dur = round(_t.time() - t0, 1)
+    cost = ws = None
+    try:
+        env = json.loads(out)
+        cost = env.get("total_cost_usd")
+        ws = (env.get("usage", {}) or {}).get("server_tool_use", {}).get("web_search_requests")
+    except Exception:
+        pass
     data = _last_json(_envelope_result(out))
+    scan_log.emit("ai_call", purpose="website_research", brand=brand, model=mdl,
+                  ok=data is not None, duration_s=dur, prompt_chars=len(prompt),
+                  prompt_preview=prompt[:1100], web_searches=ws, cost_usd=cost,
+                  result=(json.dumps(data, ensure_ascii=False)[:300] if data else None))
     if data is None:
         return None, AI_UNAVAILABLE
     site = (data.get("website") or "").strip()

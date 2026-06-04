@@ -32,6 +32,7 @@ import config
 import db
 import green
 import pipeline
+import scan_log
 
 STALE_DAYS = 30
 
@@ -276,6 +277,13 @@ def scan_one(brand_key, force=False, headless=True, conn=None, only=None):
         if not todo[sig]:
             out["skipped"].append(sig)
 
+    import time as _t
+    _t0 = _t.time()
+    scan_log.emit("brand_start", brand=brand, brand_key=brand_key,
+                  revenue=row["parent_level_revenue"],
+                  signals=[s for s in ("website", "meta", "google") if todo[s]],
+                  mode=("manual" if only else ("force" if force else "auto")))
+
     # 1) website / socials / fb_page_id (seeds the Meta fast-path).
     #    Only persisted+stamped when AI actually DECIDED (resolved=True). If AI is
     #    unavailable the website is left PENDING — never a deterministic guess —
@@ -285,7 +293,11 @@ def scan_one(brand_key, force=False, headless=True, conn=None, only=None):
     if todo["website"] and not allow_ai:
         out["skipped"].append("website")          # low-value: don't spend AI research
         out["website_status"] = "below_revenue_floor"
+        scan_log.emit("phase", brand=brand, signal="website",
+                      result="skipped (below revenue floor)")
     elif todo["website"]:
+        _pt = _t.time()
+        scan_log.emit("phase", brand=brand, signal="website", state="researching website…")
         try:
             web = pipeline.resolve_web(
                 {"brand": brand, "example_title": row["example_title"] or ""},
@@ -298,11 +310,19 @@ def scan_one(brand_key, force=False, headless=True, conn=None, only=None):
                                    (brand_key,)).fetchone()
             else:
                 out["website_status"] = "pending_ai"  # not stamped -> retried
+            scan_log.emit("phase", brand=brand, signal="website",
+                          duration_s=round(_t.time() - _pt, 1),
+                          result=(web.get("website_url") or web.get("website_remarks")
+                                  or "no site"))
         except Exception as e:
             out["website_error"] = str(e)
+            scan_log.emit("phase", brand=brand, signal="website",
+                          duration_s=round(_t.time() - _pt, 1), error=str(e)[:120])
 
     # 2) Meta ad count (reuse resolved fb_page_id when present)
     if todo["meta"]:
+        _pt = _t.time()
+        scan_log.emit("phase", brand=brand, signal="meta", state="scraping Meta Ad Library…")
         try:
             import meta_ad_scraper
             res = meta_ad_scraper.run(brand, headless=headless,
@@ -310,11 +330,18 @@ def scan_one(brand_key, force=False, headless=True, conn=None, only=None):
             c, s = apply_meta_result(conn, brand_key, res)
             out["did"].append("meta")
             out["meta_count"], out["meta_status"] = c, s
+            scan_log.emit("phase", brand=brand, signal="meta",
+                          duration_s=round(_t.time() - _pt, 1),
+                          result=f"{c} ads ({s})")
         except Exception as e:
             out["meta_error"] = str(e)
+            scan_log.emit("phase", brand=brand, signal="meta",
+                          duration_s=round(_t.time() - _pt, 1), error=str(e)[:120])
 
     # 3) Google ad count (reuse resolved website domain when present)
     if todo["google"]:
+        _pt = _t.time()
+        scan_log.emit("phase", brand=brand, signal="google", state="scraping Google Transparency…")
         try:
             import google_ad_scraper
             res = google_ad_scraper.run(brand, headless=headless,
@@ -322,8 +349,13 @@ def scan_one(brand_key, force=False, headless=True, conn=None, only=None):
             c, s = apply_google_result(conn, brand_key, res)
             out["did"].append("google")
             out["google_count"], out["google_status"] = c, s
+            scan_log.emit("phase", brand=brand, signal="google",
+                          duration_s=round(_t.time() - _pt, 1),
+                          result=f"{c} ads ({s})")
         except Exception as e:
             out["google_error"] = str(e)
+            scan_log.emit("phase", brand=brand, signal="google",
+                          duration_s=round(_t.time() - _pt, 1), error=str(e)[:120])
 
     # Cross-signal reconcile: if website research found nothing but the Google ad
     # scraper resolved a brand-matching advertiser domain, adopt it as the website.
@@ -333,6 +365,8 @@ def scan_one(brand_key, force=False, headless=True, conn=None, only=None):
         out["website_source"] = "google_domain"
         if "website" not in out["did"]:
             out["did"].append("website(from-google)")
+        scan_log.emit("phase", brand=brand, signal="website",
+                      result=f"adopted Google domain: {adopted}")
 
     conn.execute(
         "UPDATE brands SET updated_at=?, created_at=COALESCE(created_at,?), "
@@ -342,6 +376,9 @@ def scan_one(brand_key, force=False, headless=True, conn=None, only=None):
     green.mark_one(conn, brand_key)
     if not out["did"]:
         out["status"] = "fresh"  # nothing was stale; nothing scanned
+    scan_log.emit("brand_done", brand=brand, brand_key=brand_key,
+                  did=out["did"], status=out["status"],
+                  duration_s=round(_t.time() - _t0, 1))
     return out
 
 
