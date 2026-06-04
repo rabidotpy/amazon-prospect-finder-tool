@@ -26,6 +26,7 @@ import config
 import db
 import green
 import pipeline
+import worker_status
 
 _STOP = False
 # How many stale brands to scan per cycle before re-checking Downloads. Keeps
@@ -57,14 +58,25 @@ def cycle(conn):
     keys = brand_scan.stale_brand_keys(conn, limit=SCAN_BATCH)
     if not keys:
         green.export_csv(conn)
+        worker_status.write("idle", note="all brands fresh — watching ~/Downloads")
         return 0
 
     log(f"{len(keys)} stale/new brand(s) -> scanning (concurrency={SCAN_CONCURRENCY})")
+    worker_status.write("scanning", job_id=None, total=len(keys), done=0,
+                        current="starting…")
+
+    def _heartbeat(job, inflight):
+        # Publish what the worker is doing right now so the dashboard can show it.
+        worker_status.write(
+            "scanning", job_id=job.get("id"), done=job.get("done"),
+            total=job.get("total"), current=", ".join(inflight) or "wrapping up…")
+
     # Run the pool synchronously in this worker (not detached); it scans only the
     # signals that are stale/missing and refreshes the green CSV when done.
-    job = ad_jobs.enqueue(keys, detached=False, concurrency=SCAN_CONCURRENCY)
+    job = ad_jobs.enqueue(keys, detached=False, concurrency=SCAN_CONCURRENCY,
+                          progress_cb=_heartbeat)
     greens = conn.execute("SELECT COUNT(*) c FROM brands WHERE is_green=1").fetchone()["c"]
-    log(f"  scanned {job.get('done', 0)} brand(s); {greens} green so far")
+    log(f"  scanned {job.get('done', 0)} brand(s); {greens} verified green so far")
     return job.get("done", 0)
 
 
@@ -78,25 +90,32 @@ def main():
     log(f"auto worker started (GREEN_MAX_ADS={config.GREEN_MAX_ADS}, "
         f"poll={config.POLL_SECONDS}s, batch={SCAN_BATCH}, "
         f"concurrency={SCAN_CONCURRENCY})")
+    worker_status.write("starting")
     green.recompute_all(conn)
     green.export_csv(conn)
 
-    while not _STOP:
-        try:
-            did = cycle(conn)
-        except Exception as e:
-            log(f"cycle error: {e}")
-            did = 0
-        if _STOP:
-            break
-        if did == 0:
-            # idle: wait for new downloads, but stay responsive to signals
-            for _ in range(config.POLL_SECONDS):
-                if _STOP:
-                    break
-                time.sleep(1)
-
-    log("auto worker stopped")
+    try:
+        while not _STOP:
+            try:
+                did = cycle(conn)
+            except Exception as e:
+                log(f"cycle error: {e}")
+                worker_status.write("idle", last_error=str(e)[:200])
+                did = 0
+            if _STOP:
+                break
+            if did == 0:
+                # idle: wait for new downloads, but stay responsive to signals.
+                # Re-publish the heartbeat every ~30s so it never goes stale.
+                for i in range(config.POLL_SECONDS):
+                    if _STOP:
+                        break
+                    if i % 30 == 0:
+                        worker_status.write("idle")
+                    time.sleep(1)
+    finally:
+        worker_status.write("stopped")
+        log("auto worker stopped")
 
 
 if __name__ == "__main__":

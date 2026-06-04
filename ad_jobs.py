@@ -35,6 +35,7 @@ import sys
 import time
 import uuid
 
+import config
 import db
 import green
 
@@ -180,9 +181,37 @@ def _parse_result(stdout, brand_key):
             "error": "no result emitted by brand_scan"}
 
 
-def run_job(job_id, concurrency=None):
+CHILD_TIMEOUT = config._int("SCAN_CHILD_TIMEOUT", 300)  # kill a brand scan past this
+
+
+def _expired(start_monotonic, now_monotonic, timeout=CHILD_TIMEOUT):
+    """True if a child has exceeded its wall-clock deadline (pure → unit-tested)."""
+    return (now_monotonic - start_monotonic) >= timeout
+
+
+def _kill_tree(p):
+    """SIGKILL a child and its whole process group (Chromium / claude grandchildren)."""
+    try:
+        os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+    except Exception:
+        try:
+            p.kill()
+        except Exception:
+            pass
+
+
+def interrupted_jobs():
+    """Jobs still marked running/queued — candidates for cleanup when no worker is
+    alive (i.e. the worker died mid-job). The dashboard pairs this with the
+    heartbeat to tell the user exactly what to clear."""
+    return [j for j in list_jobs(limit=200) if j.get("status") in ("running", "queued")]
+
+
+def run_job(job_id, concurrency=None, progress_cb=None):
     """Execute a queued scan job with a pool of `concurrency` brand_scan
-    subprocesses, updating the job file as each brand finishes."""
+    subprocesses. Each child has a wall-clock deadline (CHILD_TIMEOUT) so one hung
+    scan can never freeze the worker. `progress_cb(job, inflight_keys)` is called
+    on every state change (and periodically) so the worker can publish a heartbeat."""
     job = read_job(job_id)
     if not job:
         print(f"job {job_id} not found", file=sys.stderr)
@@ -193,33 +222,58 @@ def run_job(job_id, concurrency=None):
     job["started_at"] = _now()
     _write_job(job)
 
+    running = {}    # Popen -> brand_key
+    started = {}    # Popen -> monotonic start time
+
+    def _tick():
+        if progress_cb:
+            try:
+                progress_cb(job, [running[p] for p in running])
+            except Exception:
+                pass
+
+    def _record(outcome, label):
+        job["results"].append(outcome)
+        job["done"] = len(job["results"])
+        _write_job(job)
+        _tick()
+        print(f"  [{job['done']}/{job['total']}] {label}", file=sys.stderr)
+
     keys = list(job["brand_keys"])
-    running = {}   # Popen -> brand_key
     idx = 0
+    _tick()
     while idx < len(keys) or running:
         # top up the pool
         while len(running) < concurrency and idx < len(keys):
             k = keys[idx]
             idx += 1
             cmd = [_PY, _SCAN, "scan", k] + (["--force"] if force else [])
-            # stderr inherited -> job log (no pipe to fill); stdout pipe = JSON line
-            p = subprocess.Popen(cmd, cwd=_HERE, stdout=subprocess.PIPE, text=True)
+            p = subprocess.Popen(cmd, cwd=_HERE, stdout=subprocess.PIPE, text=True,
+                                 start_new_session=True)  # own group → killable subtree
             running[p] = k
-        # harvest any finished
+            started[p] = time.monotonic()
+            _tick()
+        # enforce per-child deadline
+        now = time.monotonic()
+        for p in [p for p in list(running) if _expired(started[p], now)]:
+            k = running.pop(p)
+            started.pop(p, None)
+            _kill_tree(p)
+            _record({"brand_key": k, "status": "timeout",
+                     "error": f"killed after {CHILD_TIMEOUT}s"}, f"{k}: TIMEOUT")
+        # harvest finished
         finished = [p for p in list(running) if p.poll() is not None]
         if not finished:
+            _tick()                     # keep the heartbeat fresh during long scans
             time.sleep(0.4)
             continue
         for p in finished:
             k = running.pop(p)
+            started.pop(p, None)
             stdout, _ = p.communicate()
             outcome = _parse_result(stdout, k)
-            job["results"].append(outcome)
-            job["done"] = len(job["results"])
-            _write_job(job)
-            print(f"  [{job['done']}/{job['total']}] {outcome.get('brand', k)}: "
-                  f"{outcome.get('status')} did={outcome.get('did')}",
-                  file=sys.stderr)
+            _record(outcome, f"{outcome.get('brand', k)}: {outcome.get('status')} "
+                             f"did={outcome.get('did')}")
 
     # Refresh the green pitch-list so the Green Prospects page reflects new counts.
     try:
@@ -233,12 +287,14 @@ def run_job(job_id, concurrency=None):
     job["status"] = "done"
     job["finished_at"] = _now()
     _write_job(job)
+    _tick()
 
 
 def enqueue(brand_keys, force=False, brand_names=None, detached=True,
-            concurrency=DEFAULT_CONCURRENCY):
+            concurrency=DEFAULT_CONCURRENCY, progress_cb=None):
     """Create a scan job for `brand_keys` and launch it in a detached subprocess.
-    Returns the job dict. Already-fresh signals are skipped unless `force`."""
+    Returns the job dict. Already-fresh signals are skipped unless `force`.
+    `progress_cb` is forwarded to run_job for the synchronous (worker) path."""
     brand_keys = [k for k in dict.fromkeys(brand_keys) if k]  # dedupe, keep order
     job = {
         "id": uuid.uuid4().hex[:12],
@@ -262,7 +318,7 @@ def enqueue(brand_keys, force=False, brand_names=None, detached=True,
                 cwd=_HERE, stdout=fh, stderr=subprocess.STDOUT,
                 start_new_session=True)  # detach: survives Streamlit reruns
     elif brand_keys:
-        run_job(job["id"])
+        run_job(job["id"], progress_cb=progress_cb)
         job = read_job(job["id"])
     return job
 

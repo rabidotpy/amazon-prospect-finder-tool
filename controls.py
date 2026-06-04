@@ -1,33 +1,95 @@
 """Shared sidebar control panel, rendered on every page.
 
 Streamlit renders the sidebar per-page, so this lives in one module and is called
-from both dashboard.py and pages/1_Green_Prospects.py. It manages scan jobs
-(start — guarded against parallel runs — stop, clear) and busts the caller's data
-cache via the supplied `bust_caches` callback.
+from both dashboard.py and pages/1_Green_Prospects.py.
+
+It is the worker's window to the user: it always shows whether the background
+worker is running, what brand/job it is processing right now, and — if the worker
+died mid-job — exactly what to start and what to clean up. No silent failures.
 """
+
+import os
+import subprocess
 
 import streamlit as st
 
 import ad_jobs
 import brand_scan
+import worker_status
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _manage(action):
+    """Run ./manage.sh <action> (start/stop/restart) for the launchd worker."""
+    try:
+        r = subprocess.run(["bash", os.path.join(_HERE, "manage.sh"), action],
+                           cwd=_HERE, capture_output=True, text=True, timeout=30)
+        return r.returncode == 0, (r.stdout + r.stderr).strip()
+    except Exception as e:
+        return False, str(e)
+
+
+def _worker_panel():
+    """Always-visible worker status: running/idle/stopped + current activity, with
+    a one-click start and interrupted-job cleanup when it's down."""
+    st.markdown("### 🛰️ Background worker")
+    s = worker_status.summary()
+    # Heartbeat is the source of truth; fall back to a process check for the very
+    # first run before any heartbeat exists.
+    alive = s["alive"] or (s["state"] == "unknown" and ad_jobs.worker_running())
+
+    if alive and s["state"] == "scanning":
+        st.success(f"🟢 Scanning — **{s.get('current') or '…'}**")
+        total = s.get("total") or 0
+        if total:
+            done = s.get("done") or 0
+            st.progress(min(done / max(total, 1), 1.0),
+                        text=f"job {s.get('job_id') or '—'} · {done}/{total}")
+        if s.get("age") is not None:
+            st.caption(f"updated {int(s['age'])}s ago")
+    elif alive:
+        st.success("🟢 Worker running — idle, watching ~/Downloads")
+        if s.get("age") is not None:
+            st.caption(f"last heartbeat {int(s['age'])}s ago")
+    else:
+        st.error("🔴 Worker is **not running** — new brands won't be processed.")
+        if s.get("heartbeat"):
+            st.caption(f"last seen: {s['heartbeat']}")
+        if s.get("last_error"):
+            st.caption(f"last error: {s['last_error']}")
+        if st.button("▶️  Start background worker", type="primary",
+                     use_container_width=True):
+            ok, msg = _manage("start")
+            st.toast("Worker starting…" if ok else f"Start failed: {msg[:80]}")
+            st.rerun()
+        st.caption("…or in a terminal: `./manage.sh start`")
+
+    # Interrupted jobs: worker died mid-job, leaving 'running'/'queued' job files.
+    interrupted = ad_jobs.interrupted_jobs()
+    if interrupted and not (alive and s["state"] == "scanning"):
+        st.warning(f"⚠️ {len(interrupted)} job(s) were left mid-run when the worker "
+                   f"stopped — their data is stale.")
+        if st.button(f"🧹  Clear {len(interrupted)} interrupted job(s)",
+                     use_container_width=True):
+            ad_jobs.stop_running()
+            ad_jobs.prune_dead_jobs()
+            st.toast("Cleared interrupted jobs.")
+            st.rerun()
 
 
 def render_sidebar(get_conn, bust_caches=lambda: None):
     """Render the controls. `get_conn` returns a SQLite connection (row factory),
     `bust_caches` clears the calling page's @st.cache_data tables."""
     with st.sidebar:
-        st.markdown("### ⚙️ Controls")
-
-        job_running = ad_jobs.is_any_running()
-        worker_on = ad_jobs.worker_running()
-        st.markdown(
-            f"**Scan job:** {'🟢 running' if job_running else '⚪ idle'}  \n"
-            f"**Background worker:** {'🟢 on' if worker_on else '⚪ off'}")
+        _worker_panel()
         st.divider()
 
-        # --- start a new scan, but never in parallel with another job ---
-        if st.button("▶️  Start scan (stale brands)", use_container_width=True,
-                     type="primary", disabled=job_running):
+        st.markdown("### 🔎 Manual scan")
+        job_running = ad_jobs.is_any_running()
+
+        if st.button("▶️  Scan stale brands now", use_container_width=True,
+                     disabled=job_running):
             keys = brand_scan.stale_brand_keys(get_conn(), limit=200)
             if not keys:
                 st.toast("Nothing stale to scan — all brands fresh.")
@@ -38,13 +100,8 @@ def render_sidebar(get_conn, bust_caches=lambda: None):
                 st.toast(f"Started scan for {job['total']} brand(s).")
                 st.rerun()
         if job_running:
-            st.caption("A scan job is already running. Stop it before starting "
-                       "another to avoid parallel scans.")
-        elif worker_on:
-            st.caption("The background worker is already scanning continuously; a "
-                       "manual scan is usually unnecessary (30-day freshness dedupes).")
+            st.caption("A manual scan job is already running.")
 
-        # --- stop / clean ---
         if st.button("⏹️  Stop running job", use_container_width=True,
                      disabled=not job_running):
             res = ad_jobs.stop_running()
@@ -52,23 +109,21 @@ def render_sidebar(get_conn, bust_caches=lambda: None):
                      f"killed {len(res['killed'])} process(es).")
             st.rerun()
 
-        if st.button("🧹  Clear abandoned job data", use_container_width=True):
-            removed = ad_jobs.prune_dead_jobs()
-            st.toast(f"Pruned {len(removed)} failed/stopped/zombie job(s).")
-            st.rerun()
+        with st.expander("🧹  Maintenance"):
+            if st.button("Clear abandoned job data", use_container_width=True):
+                removed = ad_jobs.prune_dead_jobs()
+                st.toast(f"Pruned {len(removed)} failed/stopped/zombie job(s).")
+                st.rerun()
+            if st.button("Clear ALL job records", use_container_width=True):
+                n = ad_jobs.clear_all_jobs()
+                st.session_state["scan_jobs"] = []
+                st.toast(f"Cleared {n} job record(s).")
+                st.rerun()
+            if st.button("Clear cache & reload", use_container_width=True):
+                bust_caches()
+                st.toast("Cache cleared.")
+                st.rerun()
 
-        if st.button("🗑️  Clear ALL job records", use_container_width=True):
-            n = ad_jobs.clear_all_jobs()
-            st.session_state["scan_jobs"] = []
-            st.toast(f"Cleared {n} job record(s).")
-            st.rerun()
-
-        if st.button("♻️  Clear cache & reload", use_container_width=True):
-            bust_caches()
-            st.toast("Cache cleared.")
-            st.rerun()
-
-        st.divider()
         with st.expander("⌨️  Terminal helper commands"):
             st.code(
                 "# dashboard\n"
