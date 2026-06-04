@@ -201,6 +201,19 @@ def _kill_tree(p):
             pass
 
 
+def scan_signal(brand_key, signal, timeout=200):
+    """Synchronously refresh ONE signal (website|meta|google) for one brand in an
+    isolated subprocess (own Chromium/AI). Returns the outcome dict. Used by the
+    dashboard's per-field refresh buttons; not gated by the daily cap."""
+    cmd = [_PY, _SCAN, "scan", brand_key, "--only", signal]
+    try:
+        p = subprocess.run(cmd, cwd=_HERE, capture_output=True, text=True,
+                           timeout=timeout)
+    except Exception as e:
+        return {"brand_key": brand_key, "status": "error", "error": str(e)}
+    return _parse_result(p.stdout, brand_key)
+
+
 def interrupted_jobs():
     """Jobs still marked running/queued — candidates for cleanup when no worker is
     alive (i.e. the worker died mid-job). The dashboard pairs this with the

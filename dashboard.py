@@ -243,6 +243,35 @@ def render_brands_tab(bdf, products):
     }
     st.dataframe(bdf[cols], use_container_width=True, hide_index=True,
                  column_config=cfg, height=480)
+
+    # -- per-brand single-signal refresh (Website / Meta / Google only) --
+    st.markdown("##### 🔁 Refresh one brand")
+    st.caption("Re-fetch a single field for one brand (ignores the revenue gate & "
+               "freshness; not counted against the daily cap).")
+    rc = st.columns([2.6, 1, 1, 1])
+    pick = rc[0].selectbox("Brand", bdf["brand"].tolist(),
+                           key="refresh_brand", label_visibility="collapsed")
+    bkey = bdf.loc[bdf["brand"] == pick, "brand_key"].iloc[0]
+
+    def _refresh(sig):
+        with st.spinner(f"Refreshing {sig} for {pick}…"):
+            out = ad_jobs.scan_signal(bkey, sig)
+        _bust_caches()
+        if sig == "website":
+            st.toast(f"{pick} website: {out.get('website_url') or 'no site found'}")
+        elif sig == "meta":
+            st.toast(f"{pick} Meta ads: {out.get('meta_count')}")
+        else:
+            st.toast(f"{pick} Google ads: {out.get('google_count')}")
+        st.rerun()
+
+    if rc[1].button("🌐 Website", key="rf_web", use_container_width=True):
+        _refresh("website")
+    if rc[2].button("📘 Meta", key="rf_meta", use_container_width=True):
+        _refresh("meta")
+    if rc[3].button("🔎 Google", key="rf_goog", use_container_width=True):
+        _refresh("google")
+
     render_job_panel()
 
 

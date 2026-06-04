@@ -31,6 +31,21 @@ def test_interrupted_jobs_detects_running(jobs):
     assert "live" in ids and "donejob" not in ids
 
 
+def test_scan_signal_passes_only_flag(monkeypatch):
+    import ad_jobs
+    captured = {}
+
+    class _R:
+        stdout = '{"brand_key":"x","status":"ok","did":["meta"],"meta_count":7}'
+
+    monkeypatch.setattr(ad_jobs.subprocess, "run",
+                        lambda cmd, **k: captured.setdefault("cmd", cmd) or _R())
+    out = ad_jobs.scan_signal("x", "meta")
+    assert "--only" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--only") + 1] == "meta"
+    assert out["did"] == ["meta"] and out["meta_count"] == 7
+
+
 def test_run_job_heartbeat_and_completion(jobs, monkeypatch):
     """A job over brand keys that don't exist: each brand_scan child returns
     'missing' fast (no AI/Playwright), so we exercise the pool + progress_cb cheaply."""

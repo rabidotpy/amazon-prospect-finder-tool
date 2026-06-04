@@ -247,10 +247,14 @@ def needs(row, force=False):
     }
 
 
-def scan_one(brand_key, force=False, headless=True, conn=None):
+def scan_one(brand_key, force=False, headless=True, conn=None, only=None):
     """Scan a single brand, persisting only the signals that are stale/missing.
     Returns a compact outcome dict. Safe to call repeatedly — fresh signals are
-    skipped (see STALE_DAYS)."""
+    skipped (see STALE_DAYS).
+
+    `only` (a signal name or set, e.g. {"website"}) forces a manual refresh of just
+    those signal(s), ignoring freshness and the revenue gate — used by the
+    dashboard's per-field refresh buttons."""
     own = conn is None
     if own:
         conn = db.connect()
@@ -261,7 +265,11 @@ def scan_one(brand_key, force=False, headless=True, conn=None):
         return {"brand_key": brand_key, "status": "missing", "did": []}
 
     brand = row["brand"]
-    todo = needs(row, force)
+    if only:
+        only = {only} if isinstance(only, str) else set(only)
+        todo = {s: (s in only) for s in ("website", "meta", "google")}
+    else:
+        todo = needs(row, force)
     out = {"brand_key": brand_key, "brand": brand, "did": [], "skipped": [],
            "status": "ok"}
     for sig in ("website", "meta", "google"):
@@ -272,7 +280,8 @@ def scan_one(brand_key, force=False, headless=True, conn=None):
     #    Only persisted+stamped when AI actually DECIDED (resolved=True). If AI is
     #    unavailable the website is left PENDING — never a deterministic guess —
     #    so the brand stays stale and is retried once AI is back.
-    allow_ai = force or (row["parent_level_revenue"] or 0) >= AI_REVENUE_FLOOR
+    allow_ai = (force or bool(only)            # manual refresh overrides the gate
+                or (row["parent_level_revenue"] or 0) >= AI_REVENUE_FLOOR)
     if todo["website"] and not allow_ai:
         out["skipped"].append("website")          # low-value: don't spend AI research
         out["website_status"] = "below_revenue_floor"
@@ -378,7 +387,11 @@ def main():
     args = sys.argv[1:]
     if len(args) >= 2 and args[0] == "scan":
         force = "--force" in args
-        out = scan_one(args[1], force=force)
+        only = None
+        if "--only" in args:
+            i = args.index("--only")
+            only = args[i + 1] if i + 1 < len(args) else None
+        out = scan_one(args[1], force=force, only=only)
         print(json.dumps(out))
     elif args and args[0] == "ai-check":
         ok, reason = ai_live()
