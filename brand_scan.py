@@ -176,6 +176,8 @@ def reconcile_website(conn, brand_key):
     gdom = _google_domain(row["google_ads_url"])
     if not gdom or not websearch.brand_domain_match(row["brand"], gdom):
         return None
+    if websearch.is_parked(gdom):     # a Google advertiser domain can still be a parked squatter
+        return None
     conn.execute(
         "UPDATE brands SET website_url=?, has_website=1, "
         "confidence='google_domain', website_scanned_at=COALESCE(website_scanned_at,?), "

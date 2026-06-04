@@ -1,9 +1,18 @@
 """Cross-signal reconcile: adopt the Google-verified advertiser domain as the
 website when research found none (fixes the LEGION false-green / missing link)."""
+import pytest
+
 import brand_scan
+import websearch
 from conftest import insert_brand
 
 GURL = "https://adstransparency.google.com/?region=anywhere&domain={d}"
+
+
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch):
+    """Default: treat adopted domains as live (not parked) so tests stay offline."""
+    monkeypatch.setattr(websearch, "is_parked", lambda d: False)
 
 
 def test_google_domain_extraction():
@@ -29,6 +38,16 @@ def test_adopts_brand_matching_google_domain(conn):
                      "WHERE brand_key='legion'").fetchone()
     assert r["website_url"] == "legion.co" and r["has_website"] == 1
     assert r["confidence"] == "google_domain"
+
+
+def test_does_not_adopt_parked_google_domain(conn, monkeypatch):
+    monkeypatch.setattr(websearch, "is_parked", lambda d: True)   # covergirl.co case
+    insert_brand(conn, "covergirl", has_website=0)
+    conn.execute("UPDATE brands SET brand='COVERGIRL', website_url='' WHERE brand_key='covergirl'")
+    _set_google(conn, "covergirl", "covergirl.co")
+    assert brand_scan.reconcile_website(conn, "covergirl") is None
+    r = conn.execute("SELECT website_url FROM brands WHERE brand_key='covergirl'").fetchone()
+    assert (r["website_url"] or "") == ""
 
 
 def test_does_not_adopt_mismatched_domain(conn):
