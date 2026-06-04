@@ -151,6 +151,40 @@ def ai_live_cached(ttl=300):
 AI_REVENUE_FLOOR = config._float("AI_REVENUE_FLOOR", 1000.0)
 
 
+def _google_domain(google_ads_url):
+    """Extract the advertiser domain from a Google Transparency URL
+    (…?domain=legion.co). Empty string if absent."""
+    import re
+    import urllib.parse
+    m = re.search(r"[?&]domain=([^&]+)", google_ads_url or "")
+    return urllib.parse.unquote(m.group(1)).strip() if m else ""
+
+
+def reconcile_website(conn, brand_key):
+    """If a brand has NO website on file but the Google ad scraper resolved a
+    brand-matching advertiser domain, adopt that domain as the website. The Google
+    Transparency advertiser domain is a verified, brand-owned domain, so this is a
+    free, high-confidence website signal we'd otherwise throw away — and it stops a
+    brand that clearly has a DTC presence from being mislabelled a green prospect.
+    Returns the adopted domain, or None."""
+    import websearch
+    row = conn.execute(
+        "SELECT brand, website_url, google_ads_url FROM brands WHERE brand_key=?",
+        (brand_key,)).fetchone()
+    if not row or (row["website_url"] or "").strip():
+        return None
+    gdom = _google_domain(row["google_ads_url"])
+    if not gdom or not websearch.brand_domain_match(row["brand"], gdom):
+        return None
+    conn.execute(
+        "UPDATE brands SET website_url=?, has_website=1, "
+        "confidence='google_domain', website_scanned_at=COALESCE(website_scanned_at,?), "
+        "google_ads_url=COALESCE(NULLIF(google_ads_url,''), google_ads_url) "
+        "WHERE brand_key=?", (gdom, _now(), brand_key))
+    conn.commit()
+    return gdom
+
+
 def stale_brand_keys(conn, limit=None):
     """Brand keys with at least one missing/stale signal, richest first (best
     leads scanned first). Drives the background worker.
@@ -255,6 +289,15 @@ def scan_one(brand_key, force=False, headless=True, conn=None):
             out["google_count"], out["google_status"] = c, s
         except Exception as e:
             out["google_error"] = str(e)
+
+    # Cross-signal reconcile: if website research found nothing but the Google ad
+    # scraper resolved a brand-matching advertiser domain, adopt it as the website.
+    adopted = reconcile_website(conn, brand_key)
+    if adopted:
+        out["website_url"] = adopted
+        out["website_source"] = "google_domain"
+        if "website" not in out["did"]:
+            out["did"].append("website(from-google)")
 
     conn.execute(
         "UPDATE brands SET updated_at=?, created_at=COALESCE(created_at,?), "
