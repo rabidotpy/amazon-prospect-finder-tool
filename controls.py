@@ -94,20 +94,26 @@ def render_sidebar(get_conn, bust_caches=lambda: None):
 
         st.markdown("### 🔎 Manual scan")
         job_running = ad_jobs.is_any_running()
+        remaining = settings.remaining_today()
 
         if st.button("▶️  Scan stale brands now", use_container_width=True,
-                     disabled=job_running):
-            keys = brand_scan.stale_brand_keys(get_conn(), limit=200)
+                     disabled=job_running or remaining <= 0):
+            # Never enqueue more than today's remaining budget.
+            keys = brand_scan.stale_brand_keys(get_conn(), limit=remaining)
             if not keys:
                 st.toast("Nothing stale to scan — all brands fresh.")
             else:
                 job = ad_jobs.enqueue(keys)
                 st.session_state["scan_jobs"] = [job["id"]] + \
                     st.session_state.get("scan_jobs", [])
-                st.toast(f"Started scan for {job['total']} brand(s).")
+                st.toast(f"Started scan for {job['total']} brand(s) "
+                         f"(daily budget: {remaining} left).")
                 st.rerun()
         if job_running:
             st.caption("A manual scan job is already running.")
+        elif remaining <= 0:
+            st.caption(f"Daily cap reached ({settings.scanned_today()}/"
+                       f"{settings.get_daily_cap()}). Raise it in ⚙️ Settings to scan more.")
 
         if st.button("⏹️  Stop running job", use_container_width=True,
                      disabled=not job_running):

@@ -28,6 +28,7 @@ import db
 import green
 import pipeline
 import query
+import settings
 
 st.set_page_config(page_title="Amazon Prospects", page_icon="🟢", layout="wide")
 
@@ -179,30 +180,41 @@ def render_brands_tab(bdf, products):
     bdf["needs_scan"] = bdf.apply(lambda r: ", ".join(_stale_signals(r)) or "—", axis=1)
     need_keys = bdf.loc[bdf["needs_scan"] != "—", "brand_key"].tolist()
 
-    # -- scan controls --
+    # -- scan controls (never exceed the live daily cap) --
+    remaining = settings.remaining_today()
     c1, c2, c3 = st.columns([1.4, 1.4, 2])
     with c1:
-        if st.button(f"🛰️  Scan {len(need_keys)} stale/new brands",
+        n_scan = min(len(need_keys), remaining)
+        if st.button(f"🛰️  Scan {n_scan} stale/new brands",
                      type="primary", use_container_width=True,
-                     disabled=not need_keys):
-            job = ad_jobs.enqueue(need_keys,
-                                  brand_names=bdf.loc[bdf["brand_key"].isin(need_keys),
+                     disabled=not need_keys or remaining <= 0):
+            keys = need_keys[:remaining]
+            job = ad_jobs.enqueue(keys,
+                                  brand_names=bdf.loc[bdf["brand_key"].isin(keys),
                                                       "brand"].tolist())
             st.session_state["scan_jobs"] = [job["id"]] + st.session_state.get("scan_jobs", [])
             st.toast(f"Queued scan for {job['total']} brand(s).")
             st.rerun()
     with c2:
         all_keys = bdf["brand_key"].tolist()
-        if st.button(f"♻️  Re-scan all {len(all_keys)} (force)",
-                     use_container_width=True, disabled=not all_keys):
-            job = ad_jobs.enqueue(all_keys, force=True,
-                                  brand_names=bdf["brand"].tolist())
+        n_force = min(len(all_keys), remaining)
+        if st.button(f"♻️  Re-scan {n_force} (force)",
+                     use_container_width=True,
+                     disabled=not all_keys or remaining <= 0):
+            keys = all_keys[:remaining]
+            job = ad_jobs.enqueue(keys, force=True,
+                                  brand_names=bdf.loc[bdf["brand_key"].isin(keys),
+                                                      "brand"].tolist())
             st.session_state["scan_jobs"] = [job["id"]] + st.session_state.get("scan_jobs", [])
             st.toast(f"Queued FORCE scan for {job['total']} brand(s).")
             st.rerun()
     with c3:
-        st.caption("Stale = missing or scanned > 30 days ago. Two brands scan at "
-                   "a time in the background; this page stays responsive.")
+        if remaining <= 0:
+            st.caption(f"⛔ Daily cap reached ({settings.scanned_today()}/"
+                       f"{settings.get_daily_cap()}). Raise it in the sidebar ⚙️ Settings.")
+        else:
+            st.caption(f"Stale = missing or scanned > 30 days ago. Daily budget: "
+                       f"**{remaining}** scans left today (cap {settings.get_daily_cap()}).")
 
     # -- table --
     cols = [c for c in [
