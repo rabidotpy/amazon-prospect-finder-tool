@@ -173,3 +173,55 @@ brands — two Chromium racing the same `brand_key` UPDATE.
 
 Items P0-1, P1-1, P1-7, P1-8, P2-2 are quick (<30 min each). P1-2 (parent_asin) and P0-2/P0-3 (AI
 hardening + parsing) are the larger pieces.
+
+---
+
+## Addendum — fixes from Sample #2 (stored-data verification, 2026-06-04)
+
+Cross-references `website-accuracy-sample.md` → "Sample #2". Affected counts measured DB-wide.
+
+### S2-1 · [P0] Green flag asserts unknown ad counts as zero (759/781 unverified greens)
+**Problem (Issue A):** `green.is_green` does `(meta_count or 0) >= MAX` → `None` (never scraped /
+scraper abstained) treated as 0 → green. **781** greens; only **22** with both counts known; **759
+(97%)** green on ≥1 unknown; **583** never Meta-scanned. **Root cause:** NULL→0 coercion + ad-scan
+coverage lagging website research (Meta scraper returns unknown ~41% of scanned brands).
+**Fix:** (1) in `is_green`/`mark_one`, if `has_website` is false but either count is NULL → set
+`is_green=NULL` ("candidate — ads unverified"), never 1; `is_green=1` only when both counts non-NULL
+and `<MAX`. (2) Green page headline + default filter use **Verified** greens; show "Candidate (ads
+unknown)" as a separate labeled bucket. (3) `recompute_all` re-labels the 759 rows.
+**Prevent:** pytest `test_is_green_null_safe()`; CI check that the Green headline counts Verified only.
+
+### S2-2 · [P1] Confident wrong-brand websites persisted + locked (same-category trap)
+**Problem (Issues B/C):** obscure Amazon-only brands get a different brand's same-category site;
+`determine-once` locks it. Confirmed/suspected wrong stored: `FKMEE→walkerskinprotect.com`,
+`BIZYAC→freshliving.store`, `Tbexem→daislashes.com` (~0.6–1% of 476, ≤4% upper bound). **Root cause:**
+prompt allows category-only match; `web_search=0` → memory confabulation; no post-verification before
+write; nondeterministic first run locked.
+**Fix:** (1) **post-verify gate** in `resolve_web` before persisting — normalize brand + returned
+domain (strip spaces/`&`/punct, expand digits `5%`→`5percent`, allow subdomains/known abbreviations);
+require the brand token in the domain **or** fetched title; else abstain, never `confidence='ai'`.
+(2) Prompt: reject same-category-different-brand + resellers/marketplaces; UNKNOWN if no own DTC site.
+(3) Lower temperature; confirmation run for soft-fail brands before locking. (4) Re-run the gate over
+the 476 stored `ai` sites; reset failures to pending.
+**Prevent:** brand-token gate on every write path; regression fixtures FKMEE/BIZYAC/Tbexem; never lock
+a result that failed the gate or a confirmation pass.
+
+### S2-3 · [P1] Parked-detector false positive rejects real stores
+**Problem (Issue D):** `_looks_parked` flagged `shopnaturescraft.com` (real Shopify) via the generic
+`("buy now"|"make an offer")+"for sale"` combo / `"premium"` markers → in the live path this rejects a
+correct AI domain as parked. **Root cause:** over-broad heuristics from the parked-domain sprint.
+**Fix:** make **redirect-to-parking-path** (`/lander`…) the primary signal; drop the `for-sale+buy-now`
+combo and bare `"premium"`/`"the domain name"`; keep registrar signatures + explicit "this domain is
+for sale" only. **Prevent:** parked test set (30 real stores incl. supplement Shopify + 30 landers),
+hard **FP=0** gate in CI.
+
+### S2-4 · [P2] Coverage shown as completeness
+**Problem (Issue F):** partial data shown as final — **625** website-pending, **583** green never
+Meta-scanned, **121** blank-`seller_key` products in brand revenue. **Fix:** per-signal coverage
+indicators ("website ✓ / ads —"); exclude ads-unverified from headline green (ties S2-1); decide
+blank-seller policy. **Prevent:** show coverage wherever a count is headlined.
+
+> **Net:** S2-1 is the highest-impact data-accuracy fix (makes the green list trustworthy) and is
+> small (a few lines in `green.py` + recompute). S2-2 (brand-token post-verify) closes the only real
+> website-accuracy hole and composes with the cost gate. S2-3 protects real sites from being dropped.
+> All stay on the claude-CLI subscription — no API key.
