@@ -24,7 +24,9 @@ scan gets its own browser + SQLite connection):
 Prints a single JSON line describing the outcome.
 """
 
+import contextlib
 import datetime as dt
+import io
 import json
 import sys
 
@@ -33,6 +35,46 @@ import db
 import green
 import pipeline
 import scan_log
+
+
+class _TeeStderr(io.TextIOBase):
+    """Mirror stderr to the real stream AND to scan_log as 'log' events, so every
+    step the scrapers print shows up live in the Scan Logs terminal."""
+
+    def __init__(self, brand, orig):
+        self._brand, self._orig, self._buf = brand, orig, ""
+
+    def write(self, s):
+        try:
+            self._orig.write(s)
+        except Exception:
+            pass
+        self._buf += s
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            line = line.strip()
+            if line:
+                scan_log.emit("log", brand=self._brand, line=line[:400])
+        return len(s)
+
+    def flush(self):
+        try:
+            self._orig.flush()
+        except Exception:
+            pass
+
+
+@contextlib.contextmanager
+def _tee(brand):
+    orig = sys.stderr
+    sys.stderr = _TeeStderr(brand, orig)
+    try:
+        yield
+    finally:
+        rest = getattr(sys.stderr, "_buf", "").strip()
+        if rest:
+            scan_log.emit("log", brand=brand, line=rest[:400])
+        sys.stderr = orig
 
 STALE_DAYS = 30
 
@@ -299,9 +341,10 @@ def scan_one(brand_key, force=False, headless=True, conn=None, only=None):
         _pt = _t.time()
         scan_log.emit("phase", brand=brand, signal="website", state="researching website…")
         try:
-            web = pipeline.resolve_web(
-                {"brand": brand, "example_title": row["example_title"] or ""},
-                use_enrich=True, allow_ai=allow_ai)
+            with _tee(brand):
+                web = pipeline.resolve_web(
+                    {"brand": brand, "example_title": row["example_title"] or ""},
+                    use_enrich=True, allow_ai=allow_ai)
             if web.get("website_resolved"):
                 _apply_web(conn, brand_key, web)   # stamps website_scanned_at
                 out["did"].append("website")
@@ -325,8 +368,9 @@ def scan_one(brand_key, force=False, headless=True, conn=None, only=None):
         scan_log.emit("phase", brand=brand, signal="meta", state="scraping Meta Ad Library…")
         try:
             import meta_ad_scraper
-            res = meta_ad_scraper.run(brand, headless=headless,
-                                      page_id=row["fb_page_id"] or None)
+            with _tee(brand):
+                res = meta_ad_scraper.run(brand, headless=headless,
+                                          page_id=row["fb_page_id"] or None)
             c, s = apply_meta_result(conn, brand_key, res)
             out["did"].append("meta")
             out["meta_count"], out["meta_status"] = c, s
@@ -344,8 +388,9 @@ def scan_one(brand_key, force=False, headless=True, conn=None, only=None):
         scan_log.emit("phase", brand=brand, signal="google", state="scraping Google Transparency…")
         try:
             import google_ad_scraper
-            res = google_ad_scraper.run(brand, headless=headless,
-                                        domain=row["website_url"] or None)
+            with _tee(brand):
+                res = google_ad_scraper.run(brand, headless=headless,
+                                            domain=row["website_url"] or None)
             c, s = apply_google_result(conn, brand_key, res)
             out["did"].append("google")
             out["google_count"], out["google_status"] = c, s

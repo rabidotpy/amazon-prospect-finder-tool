@@ -133,6 +133,11 @@ def _line(ev):
         return (ts + f"<span class='ok'>✓ DONE</span> {_esc(ev.get('brand'))} "
                 f"<span class='dim'>did={_esc(ev.get('did'))} · {_esc(ev.get('status'))} "
                 f"· total {ev.get('duration_s')}s</span>")
+    if k == "log":
+        ln = _esc(ev.get("line", ""))
+        if ev.get("line", "").lstrip().startswith(("→", "waiting", "WARNING", "warning")):
+            return ts + f"     <span class='dim'>{ln}</span>"
+        return ts + f"     <span class='dim'>{ln}</span>"
     return ts + _esc(ev)
 
 

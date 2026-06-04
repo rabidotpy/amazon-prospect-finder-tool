@@ -161,6 +161,7 @@ def _ask(skill, payload, timeout=120):
     import time as _t
 
     import scan_log
+    scan_log.emit("log", line=f"→ {NARROW_MODEL}: {skill} — waiting for AI response…")
     t0 = _t.time()
     try:
         out = subprocess.run(
@@ -236,6 +237,8 @@ def research_website(brand, products, timeout=200, model=None):
     mdl = model or RESEARCH_MODEL
     prompt = _RESEARCH_PROMPT.format(
         brand=brand, products=json.dumps((products or [])[:15], ensure_ascii=False))
+    scan_log.emit("log", brand=brand,
+                  line=f"→ {mdl}: researching website via web search — waiting for AI response…")
     t0 = _t.time()
     try:
         out = subprocess.run(
