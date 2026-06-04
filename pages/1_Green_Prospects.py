@@ -97,6 +97,19 @@ with st.container(border=True):
     rev_min = r1[1].number_input("Min revenue ($)", min_value=0, value=0, step=1000)
     min_reviews = r1[2].number_input("Min reviews", min_value=0, value=0, step=10)
 
+    r2 = st.columns([1.4, 1, 1, 1, 1])
+    website = r2[0].segmented_control("Has website?", ["Any", "No", "Yes"],
+                                      default="Any")
+    meta_min = r2[1].number_input("Meta ads ≥", min_value=0, value=0, step=1)
+    meta_max = r2[2].number_input("Meta ads ≤", min_value=0, value=MAX, step=1)
+    goog_min = r2[3].number_input("Google ads ≥", min_value=0, value=0, step=1)
+    goog_max = r2[4].number_input("Google ads ≤", min_value=0, value=MAX, step=1)
+    treat_unknown = st.toggle(
+        "Count unknown ad counts as matching the range", value=True,
+        help="ON: a brand whose ads aren't scanned yet still passes the ad-count "
+             "filters (unknown ≠ zero, just not excluded). OFF: only brands with "
+             "KNOWN counts in range pass.")
+
 # --------------------------------------------------------------- apply
 if show == "Candidates":
     view = df[df["state"] == "candidate"].copy()
@@ -104,6 +117,21 @@ elif show == "All prospects":
     view = df[df["state"].isin(["green", "candidate"])].copy()
 else:
     view = df[df["state"] == "green"].copy()
+
+if website == "No":
+    view = view[view["has_website"].fillna(0) == 0]
+elif website == "Yes":
+    view = view[view["has_website"].fillna(0) == 1]
+
+# Ad-count range filters. Unknown (NaN) counts are kept or dropped per the toggle —
+# never silently treated as 0.
+def _in_range(series, lo, hi):
+    known = (series >= lo) & (series <= hi)
+    return known | series.isna() if treat_unknown else known & series.notna()
+
+view = view[_in_range(view["meta_ads_count"], meta_min, meta_max)]
+view = view[_in_range(view["google_ads_count"], goog_min, goog_max)]
+
 view = view[view["parent_level_revenue"].fillna(0) >= rev_min]
 view = view[view["total_reviews"].fillna(0) >= min_reviews]
 view = view.sort_values("parent_level_revenue", ascending=False)
