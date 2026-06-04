@@ -22,13 +22,13 @@ import pandas as pd
 import streamlit as st
 
 import ad_jobs
+import brand_actions
 import brand_scan
 import controls
 import db
 import green
 import pipeline
 import query
-import scan_log
 import settings
 
 st.set_page_config(page_title="Amazon Prospects", page_icon="🟢", layout="wide")
@@ -245,68 +245,17 @@ def render_brands_tab(bdf, products):
     st.dataframe(bdf[cols], use_container_width=True, hide_index=True,
                  column_config=cfg, height=480)
 
-    # -- per-brand single-signal refresh with a LIVE log popup --
-    st.markdown("##### 🔁 Refresh one brand")
-    st.caption("Re-fetch a single field for one brand (ignores the revenue gate & "
-               "freshness; not counted against the daily cap). Logs stream live in "
-               "a popup.")
-    rc = st.columns([2.6, 1, 1, 1])
-    pick = rc[0].selectbox("Brand", bdf["brand"].tolist(),
-                           key="refresh_brand", label_visibility="collapsed")
-    bkey = bdf.loc[bdf["brand"] == pick, "brand_key"].iloc[0]
-
-    def _start(sig):
-        trace, raw = ad_jobs.scan_signal_async(bkey, sig)
-        st.session_state["refresh_active"] = {
-            "brand": pick, "key": bkey, "signal": sig, "trace": trace, "raw": raw}
-        st.rerun()
-
-    if rc[1].button("🌐 Website", key="rf_web", use_container_width=True):
-        _start("website")
-    if rc[2].button("📘 Meta", key="rf_meta", use_container_width=True):
-        _start("meta")
-    if rc[3].button("🔎 Google", key="rf_goog", use_container_width=True):
-        _start("google")
-
-    if st.session_state.get("refresh_active"):
-        _refresh_log_dialog()
+    # -- per-brand workspace: re-scan signals + inspect products --
+    st.markdown("##### 🔁 Refresh / inspect a brand")
+    pick = st.selectbox("Brand", bdf["brand"].tolist(),
+                        key="refresh_brand", label_visibility="collapsed")
+    brow = bdf[bdf["brand"] == pick].iloc[0]
+    with st.container(border=True):
+        brand_actions.render_workspace(get_conn(), brow, bust_caches=_bust_caches,
+                                       key_prefix="dash_")
+    brand_actions.maybe_show_dialog(_bust_caches)
 
     render_job_panel()
-
-
-@st.dialog("🖥️  Live refresh logs", width="large")
-def _refresh_log_dialog():
-    info = st.session_state.get("refresh_active")
-    if not info:
-        return
-    st.markdown(f"Refreshing **{info['signal']}** for **{info['brand']}**")
-    evs = [e for e in scan_log.tail(500) if e.get("trace") == info["trace"]]
-    done = any(e.get("kind") == "brand_done" for e in evs)
-
-    st.markdown(scan_log.TERM_CSS, unsafe_allow_html=True)
-    inner = scan_log.format_html(evs) if evs else "<span class='dim'>starting…</span>"
-    st.markdown(f"<div class='term'>{inner}</div>", unsafe_allow_html=True)
-
-    try:
-        raw = open(info["raw"]).read()[-4000:]
-    except Exception:
-        raw = ""
-    if raw.strip():
-        with st.expander("Raw scraper output"):
-            st.code(raw)
-
-    cols = st.columns([1, 1, 3])
-    if done:
-        cols[0].success("✓ Done")
-    else:
-        cols[0].info("⏳ Scanning…")
-    if cols[1].button("Close", key="rf_close"):
-        _bust_caches()
-        st.session_state.pop("refresh_active", None)
-        st.rerun()
-    if not done:
-        time.sleep(1.5)
-        st.rerun()
 
 
 def render_job_panel():

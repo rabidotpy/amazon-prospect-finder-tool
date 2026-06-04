@@ -14,6 +14,7 @@ import sqlite3
 import pandas as pd
 import streamlit as st
 
+import brand_actions
 import config
 import controls
 import db
@@ -24,9 +25,16 @@ st.markdown(
     """
     <style>
       #MainMenu, footer {visibility: hidden;}
+      /* tasteful green wash: soft glow at the top fading into the base */
+      .stApp {background:
+        radial-gradient(1100px 520px at 50% -8%, rgba(34,197,94,0.18), transparent 62%),
+        linear-gradient(180deg, rgba(22,163,74,0.06), rgba(22,163,74,0) 280px),
+        var(--background-color, #0e1117);}
       .block-container {padding-top: 2.2rem; max-width: 1500px;}
+      h1 {color:#22c55e;}
       [data-testid="stMetricValue"] {color:#16a34a; font-weight:700;}
       [data-testid="stMetricLabel"] {opacity:.7;}
+      [data-testid="stHeader"] {background: transparent;}
     </style>
     """,
     unsafe_allow_html=True,
@@ -184,3 +192,17 @@ st.dataframe(
 
 st.download_button("⬇️  Download CSV", out.to_csv(index=False),
                    file_name="green_prospects.csv", mime="text/csv")
+
+# ----------------------------------------------------- brand workspace (in-page)
+st.divider()
+st.markdown("### 🔬 Brand workspace")
+st.caption("Re-scan a brand's website / Meta / Google (live logs), or inspect the "
+           "products it sells and every field of any product — without leaving this page.")
+brand_opts = view["brand"].tolist()
+if brand_opts:
+    wb = st.selectbox("Pick a brand", brand_opts, key="gp_ws_brand")
+    brow = view[view["brand"] == wb].iloc[0]
+    with st.container(border=True):
+        brand_actions.render_workspace(_conn(), brow, bust_caches=load_brands.clear,
+                                       key_prefix="gp_")
+brand_actions.maybe_show_dialog(load_brands.clear)
