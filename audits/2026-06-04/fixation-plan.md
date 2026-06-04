@@ -225,3 +225,91 @@ blank-seller policy. **Prevent:** show coverage wherever a count is headlined.
 > small (a few lines in `green.py` + recompute). S2-2 (brand-token post-verify) closes the only real
 > website-accuracy hole and composes with the cost gate. S2-3 protects real sites from being dropped.
 > All stay on the claude-CLI subscription — no API key.
+
+---
+
+## Reconciliation & end-goal alignment (re-read of all audits, 2026-06-04)
+
+Cross-checked every finding in `audit-plan.md` (6-angle seed evidence) and `website-accuracy-sample.md`
+(Samples #1–#2) against the items above. The **bug** findings are all covered. The items below are the
+audit's **business + best-practice** findings that the bug-focused list omitted — they're what the
+README **end goal** (trustworthy → affordable → actionable → durable worklist) actually requires.
+
+### Gaps now added
+
+- **G1 · [P1] Model tiering on the CLI subscription.** Every `ai_resolve` call defaults to **Opus**
+  (metered: narrow $0.04, research $0.26/brand → ~$285/full run, API-equiv). Pass `claude -p --model`
+  — **Haiku** for the 5 narrow skills, **Sonnet** for research — and make the model a config value.
+  Cuts quota/latency ~10–15× without leaving the subscription. *(Sample #1 rec 2; Angle 3.)*
+- **G2 · [P1 / end-goal "affordable" + "prioritized"] Revenue-gate AI spend and rank the worklist.**
+  Only research / ad-scan brands above a revenue floor; order green by revenue; drop `$0` / `watch`
+  noise from the headline. Resolves the cost↔value misalignment (Angle 5: we pay to qualify all 1,267
+  when only the high-revenue tail is worth pitching) and is the single biggest win on both quota **and**
+  error exposure (errors concentrate in the low-revenue tail per both samples).
+- **G3 · [P2 / end-goal "actionable"] Turn the list into a worklist.** Ranked, exportable green
+  worklist; a "why this lead" rationale (revenue / listing age / no-DTC); a contact/owner-discovery
+  path (revive the dead `crm_export.py`, or the LinkedIn MCP). Today the output is a list, not a
+  worklist. *(Angle 5.)*
+- **G4 · [P2] Coerce `price` to float on ingest.** `price` is absent from `FLOATCOLS`, so `$`/comma
+  prices store as TEXT (Sample #1 S9; 0 today, latent). Add `price` to `FLOATCOLS`/`to_float` so price
+  filter & sort can't break on a future export.
+- **G5 · [P1] Stand up the pytest regression suite** (promote `/tmp/aptool_audit/*` into `tests/`):
+  calculation truth tables (P1-2/P1-3/G4), green NULL-safety (S2-1), parked **FP=0** (S2-3),
+  brand-token gate (S2-2), ingest dedupe. Every "prevent recurrence" note above is inert without this.
+  *(Angle 6 — 0 tests today.)*
+- **G6 · [P2] Spend + coverage observability.** Log per-run token/$ and WebSearch/WebFetch counts, and
+  a coverage line ("website ✓ N / ads ✓ M of T"). No cost governance or spend telemetry exists. *(Angle 6.)*
+- **G7 · [P3] Minor.** Confirm `web_search` actually fires in research (metering showed
+  `web_search=0` on 200/200 — is it browsing or recalling from Opus memory?); else label confidence as
+  memory-based *(Angle 2 open question)*. Add an index on `brands(parent_level_revenue)` before scale
+  *(Angle 4)*.
+
+### Coverage matrix (audit finding → fix item)
+
+| Finding | Item |
+|---|---|
+| Revenue equal-value collapse (192 groups) | P1-2 |
+| Comma-brand seller mangling | P1-3 |
+| `price` stored as TEXT (S9) | **G4** |
+| `min_listing_age`=0 vs unknown | P3-4 |
+| False-green / NULL→0 (759/781) | S2-1 / P1-4 |
+| Wrong-brand sites locked (FKMEE…) | S2-2 |
+| Website nondeterminism | S2-2 |
+| Parked-detector false-positive | S2-3 / P2-4 |
+| Coverage-as-completeness | S2-4 |
+| `web_search=0` (browsing?) | **G7** |
+| AI cost: research ×1000 / no cap | P1-6 + **G1** + **G6** |
+| Narrow skills on Opus | **G1** |
+| Main-page caches no TTL | P1-7 |
+| `parent_level_revenue` unindexed | **G7** |
+| Hung child freezes worker | P0-1 |
+| Hot-loop / no backoff | P1-1 |
+| No row pruning on rename | P1-5 |
+| Business: revenue floor / ranking | **G2** |
+| Business: actionability / contact / CRM | **G3** |
+| Business: $0/watch noise | **G2** |
+| Best-practice: 0 tests | **G5** |
+| Security: bypassPermissions / MCP / injection | P0-2 |
+| Fragile JSON parse | P0-3 |
+| Config: default-Opus, no model config | **G1** |
+| Observability / spend telemetry | **G6** |
+| Dead code / repo hygiene | P3-1 |
+
+### End-goal-aligned sequencing (supersedes the earlier sequencing)
+
+Ordered by the README end-goal legs, not just severity:
+
+1. **Trustworthy (the deliverable is real):** **S2-1** (green = green) → **verify ad-count accuracy**
+   (the one remaining untested signal the whole green flag rests on) → **S2-2** (brand-token
+   post-verify) → **S2-3** (parked FP=0). *After this, a green row means what it says.*
+2. **Stable (won't wedge or hot-loop):** P0-1, P1-1, P2-10, P0-3.
+3. **Affordable (subscription quota, not $):** P1-6 (probe-gate) + **G1** (model tier) + **G2**
+   (revenue-gate). *Spend AI only where it pays off.*
+4. **Prioritized & actionable:** **G2** (rank by revenue, drop noise) + **G3** (worklist + contact).
+   *This is what makes it a tool a rep closes from.*
+5. **Correct numbers:** P1-2 (`parent_asin`), P1-3, **G4**, P1-5.
+6. **Durable:** **G5** (tests) + P0-2 (security) + **G6** (observability) + P2/P3 cleanup.
+
+> **One-line read:** Phase 1 makes the green list *true*; Phase 3–4 make it *cheap and actionable*;
+> Phases 2/5/6 keep it *running and correct*. Start with **S2-1** — smallest change, it's the
+> difference between a worklist a rep trusts and one they don't.
