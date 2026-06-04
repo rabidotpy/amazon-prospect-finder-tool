@@ -17,6 +17,7 @@ import streamlit as st
 import config
 import controls
 import db
+import green
 
 st.set_page_config(page_title="Green Prospects", page_icon="🟢", layout="wide")
 st.markdown(
@@ -71,37 +72,38 @@ if df.empty:
     st.info("No brands yet. Import products and let the scanner run.")
     st.stop()
 
+# ------------------------------------------------- classify (single source of truth)
+def _count(v):
+    return None if pd.isna(v) else int(v)
+
+
+df = df.copy()
+df["state"] = [
+    green.green_state(0 if pd.isna(hw) else int(hw), _count(m), _count(g))
+    for hw, m, g in zip(df["has_website"], df["meta_ads_count"], df["google_ads_count"])
+]
+n_green = int((df["state"] == "green").sum())
+n_cand = int((df["state"] == "candidate").sum())
+
 # --------------------------------------------------------------- filters
 with st.container(border=True):
-    r1 = st.columns([1.3, 1, 1, 1.2])
-    website = r1[0].segmented_control("Has website?", ["Any", "No", "Yes"],
-                                      default="No")
-    treat_unknown_zero = r1[1].toggle("Unknown ads = 0", value=True,
-                                      help="Count a not-yet-scanned brand as 0 ads.")
-    verified_only = r1[2].toggle("Verified only", value=False,
-                                 help="Only brands whose ads have actually been scanned.")
-    r1[3].caption("")
-
-    r2 = st.columns(4)
-    meta_max = r2[0].number_input("Meta ads ≤", min_value=0, value=MAX - 1, step=1)
-    goog_max = r2[1].number_input("Google ads ≤", min_value=0, value=MAX - 1, step=1)
-    rev_min = r2[2].number_input("Min revenue ($)", min_value=0, value=0, step=1000)
-    min_reviews = r2[3].number_input("Min reviews", min_value=0, value=0, step=10)
+    r1 = st.columns([2.4, 1, 1])
+    show = r1[0].segmented_control(
+        "Show", ["Verified greens", "Candidates", "All prospects"],
+        default="Verified greens",
+        help="Verified = no website AND both ad counts known & under the cap. "
+             "Candidates = no website but ads not yet scanned (unverified — never "
+             "assumed zero).")
+    rev_min = r1[1].number_input("Min revenue ($)", min_value=0, value=0, step=1000)
+    min_reviews = r1[2].number_input("Min reviews", min_value=0, value=0, step=10)
 
 # --------------------------------------------------------------- apply
-view = df.copy()
-if website == "No":
-    view = view[view["has_website"].fillna(0) == 0]
-elif website == "Yes":
-    view = view[view["has_website"].fillna(0) == 1]
-
-if verified_only:
-    view = view[view["meta_scanned_at"].notna() & view["google_scanned_at"].notna()]
-
-fill = 0 if treat_unknown_zero else -1  # -1 keeps unknowns out of a max filter
-m = view["meta_ads_count"].fillna(fill)
-g = view["google_ads_count"].fillna(fill)
-view = view[(m >= 0) & (m <= meta_max) & (g >= 0) & (g <= goog_max)]
+if show == "Candidates":
+    view = df[df["state"] == "candidate"].copy()
+elif show == "All prospects":
+    view = df[df["state"].isin(["green", "candidate"])].copy()
+else:
+    view = df[df["state"] == "green"].copy()
 view = view[view["parent_level_revenue"].fillna(0) >= rev_min]
 view = view[view["total_reviews"].fillna(0) >= min_reviews]
 view = view.sort_values("parent_level_revenue", ascending=False)
@@ -114,10 +116,11 @@ with m2.container(border=True):
     st.metric("Total monthly revenue",
               f"${view['parent_level_revenue'].fillna(0).sum():,.0f}")
 with m3.container(border=True):
-    st.metric("Median revenue",
-              f"${view['parent_level_revenue'].fillna(0).median() if len(view) else 0:,.0f}")
+    st.metric("Verified greens", f"{n_green:,}",
+              help="No website AND both ad counts known & under the cap.")
 with m4.container(border=True):
-    st.metric("Verified", f"{int(view['meta_scanned_at'].notna().sum()):,}")
+    st.metric("Candidates (ads unverified)", f"{n_cand:,}",
+              help="No website, but ads not yet scanned — not assumed zero.")
 
 # --------------------------------------------------------------- table
 out = pd.DataFrame()

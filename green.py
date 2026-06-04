@@ -5,13 +5,20 @@ revenue that is NOT yet investing in a direct-to-consumer presence, so there is
 clear room to sell them services. Concretely:
 
     GREEN  ==  has NO website
-           AND running fewer than GREEN_MAX_ADS Meta ads
-           AND running fewer than GREEN_MAX_ADS Google ads
+           AND running fewer than GREEN_MAX_ADS Meta ads   (count KNOWN)
+           AND running fewer than GREEN_MAX_ADS Google ads (count KNOWN)
 
-Unknown ad counts (None = we couldn't scrape) are treated as 0 here: a brand
-with no website almost never runs ads, and a blank means "no ads detected", not
-"many ads". The rep verifies before pitching — the CSV gives them everything
-needed to make that call.
+Three-valued, on purpose. "Unknown is never zero": a NULL ad count means we have
+not verified the brand's ad presence — it is NOT evidence of zero ads. So a brand
+with no website but an unverified ad count is a **candidate**, not a confirmed
+green. We never claim green without knowing the ads.
+
+    green_state() -> "green"     (verified: no site, both counts known & low)
+                     "candidate" (no site, but ad presence UNVERIFIED)
+                     "no"        (has a site, or a KNOWN count at/over the cap)
+
+The `brands.is_green` column stores the flag form: 1 / 0 / NULL respectively.
+Only verified greens (is_green=1) are exported to the pitch CSV.
 """
 
 import csv
@@ -33,16 +40,32 @@ CSV_COLS = [
 ]
 
 
-def is_green(has_website, meta_count, google_count, max_ads=None):
-    """The single source of truth for the green rule. Returns 1 or 0."""
+def green_state(has_website, meta_count, google_count, max_ads=None):
+    """Three-valued green classification — the single source of truth.
+
+    Returns "green" | "candidate" | "no". A KNOWN count at/over the cap
+    disqualifies even if the other count is unknown; otherwise BOTH counts must be
+    known (and low) to confirm green — an unknown count is never treated as zero.
+    """
     max_ads = config.GREEN_MAX_ADS if max_ads is None else max_ads
     if has_website:
-        return 0
-    if (meta_count or 0) >= max_ads:
-        return 0
-    if (google_count or 0) >= max_ads:
-        return 0
-    return 1
+        return "no"
+    if meta_count is not None and meta_count >= max_ads:
+        return "no"
+    if google_count is not None and google_count >= max_ads:
+        return "no"
+    if meta_count is None or google_count is None:
+        return "candidate"          # no site, but ad presence unverified
+    return "green"
+
+
+_STATE_FLAG = {"green": 1, "no": 0, "candidate": None}
+
+
+def is_green(has_website, meta_count, google_count, max_ads=None):
+    """Flag form of `green_state` for the `brands.is_green` column:
+    1 = verified green, 0 = not green, None = candidate (ads unverified)."""
+    return _STATE_FLAG[green_state(has_website, meta_count, google_count, max_ads)]
 
 
 def mark_one(conn, brand_key):
@@ -68,7 +91,8 @@ def recompute_all(conn):
         g = is_green(r["has_website"], r["meta_ads_count"], r["google_ads_count"])
         conn.execute("UPDATE brands SET is_green=? WHERE brand_key=?",
                      (g, r["brand_key"]))
-        n += g
+        if g == 1:                      # count verified greens only
+            n += 1
     conn.commit()
     return n
 

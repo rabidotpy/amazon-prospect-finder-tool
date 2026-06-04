@@ -5,3 +5,4 @@ pandas>=2.0
 # Ad-count scraping (optional but recommended; see adscrape.py)
 # After install run:  python3 -m playwright install chromium
 playwright>=1.44
+pytest>=8
