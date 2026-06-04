@@ -1,5 +1,33 @@
 # Amazon Prospect Finder
 
+## End goal
+
+Produce a **trustworthy, ranked worklist of Amazon brands worth pitching** — brands
+with *proven* revenue on Amazon but *little or no* direct-to-consumer presence (no
+real website, few/no Meta/Google ads) — so a rep can open the tool and start
+outreach that converts, without researching each brand by hand.
+
+The "green prospect" is the **signal, not the goal**. The goal is **booked outreach
+and closed deals** with under-marketed Amazon brands (the ideal customers for a
+DTC / website / paid-ads service). Everything else — Helium10 ingest, website
+research, ad scraping, the dashboard — exists only to produce that worklist
+**accurately and cheaply enough to run continuously.**
+
+**"Done and good" means the worklist is:**
+1. **Accurate** — a brand marked green genuinely has no DTC site and isn't already
+   advertising (ad counts must be *known*, not assumed).
+2. **Actionable** — each lead carries what a rep needs to act: real status
+   (site/ads), revenue, and a path to contact.
+3. **Prioritized** — surfaces the handful of high-value leads, not thousands of
+   marginal ones; revenue drives both the ranking and where AI effort is spent.
+4. **Affordable & autonomous** — refreshes itself on the claude-CLI subscription
+   without burning quota or needing babysitting.
+
+Every change should be judged by one question: **"does this make the green worklist
+something a rep can act on and close from?"**
+
+---
+
 Find **green prospects** — brands with proven Amazon revenue but little or no
 direct-to-consumer presence (no website, few/no Meta or Google ads). Those are
 the brands worth pitching.
