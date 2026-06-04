@@ -173,8 +173,9 @@ out["Google domain"] = view["google_ads_url"].fillna("")
 out["Verified"] = view["meta_scanned_at"].notna()
 out = out.reset_index(drop=True)
 
-st.dataframe(
+event = st.dataframe(
     out, use_container_width=True, hide_index=True, height=580,
+    on_select="rerun", selection_mode="single-row", key="gp_table",
     column_config={
         "Revenue": st.column_config.NumberColumn("Revenue", format="$%d"),
         "Reviews": st.column_config.NumberColumn("Reviews", format="%d"),
@@ -189,20 +190,46 @@ st.dataframe(
         "Verified": st.column_config.CheckboxColumn("Scanned"),
     },
 )
+st.caption("👆 Click a brand row to load it in the Brand workspace below.")
+
+# which brand did the user click in the table?
+try:
+    _sel = list(event.selection.rows)
+except Exception:
+    _sel = (event.get("selection", {}) or {}).get("rows", []) if event else []
+clicked_brand = out.iloc[_sel[0]]["Brand"] if _sel else None
 
 st.download_button("⬇️  Download CSV", out.to_csv(index=False),
                    file_name="green_prospects.csv", mime="text/csv")
 
 # ----------------------------------------------------- brand workspace (in-page)
 st.divider()
+st.markdown("<div id='brand-workspace'></div>", unsafe_allow_html=True)
 st.markdown("### 🔬 Brand workspace")
 st.caption("Re-scan a brand's website / Meta / Google (live logs), or inspect the "
            "products it sells and every field of any product — without leaving this page.")
 brand_opts = view["brand"].tolist()
+_scroll = False
 if brand_opts:
+    # a fresh row click selects that brand here (and scrolls to it)
+    if (clicked_brand and clicked_brand in brand_opts
+            and st.session_state.get("gp_last_click") != clicked_brand):
+        st.session_state["gp_ws_brand"] = clicked_brand
+        st.session_state["gp_last_click"] = clicked_brand
+        _scroll = True
+    # keep the stored pick valid if filters changed the options
+    if st.session_state.get("gp_ws_brand") not in brand_opts:
+        st.session_state.pop("gp_ws_brand", None)
+
     wb = st.selectbox("Pick a brand", brand_opts, key="gp_ws_brand")
     brow = view[view["brand"] == wb].iloc[0]
     with st.container(border=True):
         brand_actions.render_workspace(_conn(), brow, bust_caches=load_brands.clear,
                                        key_prefix="gp_")
+    if _scroll:
+        import streamlit.components.v1 as components
+        components.html(
+            "<script>parent.document.getElementById('brand-workspace')"
+            "?.scrollIntoView({behavior:'smooth', block:'start'});</script>",
+            height=0)
 brand_actions.maybe_show_dialog(load_brands.clear)
