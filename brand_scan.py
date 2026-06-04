@@ -160,12 +160,34 @@ def _google_domain(google_ads_url):
     return urllib.parse.unquote(m.group(1)).strip() if m else ""
 
 
+def _domain_is_brand(brand, domain):
+    """Verify a candidate domain belongs to THIS brand using product context, so a
+    same-name different-company domain is rejected (e.g. LEGION creatine vs
+    legion.co = 'Legion Technologies' workforce software). String matching alone
+    can't tell these apart — only the products can. Returns True/False; True when
+    AI is unavailable (degraded — string+parked already passed)."""
+    import websearch
+    try:
+        import ai_resolve
+    except Exception:
+        return True
+    if not ai_resolve.available():
+        return True
+    title = websearch.page_title(domain)
+    products = ai_resolve.product_titles(brand)
+    site, _why = ai_resolve.verify_website(
+        brand, products, [{"domain": domain, "title": title, "snippet": ""}])
+    if not site:
+        return False
+    return websearch.domain_of("http://" + site) == websearch.domain_of("http://" + domain)
+
+
 def reconcile_website(conn, brand_key):
     """If a brand has NO website on file but the Google ad scraper resolved a
-    brand-matching advertiser domain, adopt that domain as the website. The Google
-    Transparency advertiser domain is a verified, brand-owned domain, so this is a
-    free, high-confidence website signal we'd otherwise throw away — and it stops a
-    brand that clearly has a DTC presence from being mislabelled a green prospect.
+    domain that (a) matches the brand name, (b) isn't parked, and (c) is confirmed
+    by product-context AI verification, adopt it as the website. This recovers a
+    free, verified website signal and stops a brand with a real DTC presence from
+    being mislabelled green — without adopting a same-name different-company domain.
     Returns the adopted domain, or None."""
     import websearch
     row = conn.execute(
@@ -177,6 +199,8 @@ def reconcile_website(conn, brand_key):
     if not gdom or not websearch.brand_domain_match(row["brand"], gdom):
         return None
     if websearch.is_parked(gdom):     # a Google advertiser domain can still be a parked squatter
+        return None
+    if not _domain_is_brand(row["brand"], gdom):   # same-name different-company guard
         return None
     conn.execute(
         "UPDATE brands SET website_url=?, has_website=1, "

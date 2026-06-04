@@ -191,6 +191,25 @@ def is_parked(domain):
     return False   # unreachable -> not 'parked'
 
 
+def page_title(domain):
+    """Fetch a domain (following one redirect) and return its <title>, or '' if
+    unreachable. Used to give the AI product-context verifier real page content."""
+    for scheme in ("https://", "http://"):
+        try:
+            html = http_get(scheme + domain, timeout=7)
+        except Exception:
+            continue
+        tgt = _redirect_target(html)
+        if tgt and not any(p in tgt.lower() for p in PARKING_PATHS):
+            try:
+                html = http_get(urllib.parse.urljoin(scheme + domain, tgt),
+                                timeout=7) or html
+            except Exception:
+                pass
+        return _title(html) or ""
+    return ""
+
+
 def brand_domain_match(brand, domain):
     """True if `domain` plausibly belongs to `brand` — guards against the AI
     returning a *different* brand's same-category site. Allows abbreviations

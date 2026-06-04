@@ -11,8 +11,9 @@ GURL = "https://adstransparency.google.com/?region=anywhere&domain={d}"
 
 @pytest.fixture(autouse=True)
 def _no_network(monkeypatch):
-    """Default: treat adopted domains as live (not parked) so tests stay offline."""
+    """Default: live (not parked) + product-context confirms — keeps tests offline."""
     monkeypatch.setattr(websearch, "is_parked", lambda d: False)
+    monkeypatch.setattr(brand_scan, "_domain_is_brand", lambda brand, dom: True)
 
 
 def test_google_domain_extraction():
@@ -47,6 +48,18 @@ def test_does_not_adopt_parked_google_domain(conn, monkeypatch):
     _set_google(conn, "covergirl", "covergirl.co")
     assert brand_scan.reconcile_website(conn, "covergirl") is None
     r = conn.execute("SELECT website_url FROM brands WHERE brand_key='covergirl'").fetchone()
+    assert (r["website_url"] or "") == ""
+
+
+def test_does_not_adopt_same_name_different_company(conn, monkeypatch):
+    # LEGION (creatine) vs legion.co (Legion Technologies): name matches, not parked,
+    # but product-context verify rejects it.
+    monkeypatch.setattr(brand_scan, "_domain_is_brand", lambda brand, dom: False)
+    insert_brand(conn, "legion", has_website=0)
+    conn.execute("UPDATE brands SET brand='LEGION', website_url='' WHERE brand_key='legion'")
+    _set_google(conn, "legion", "legion.co")
+    assert brand_scan.reconcile_website(conn, "legion") is None
+    r = conn.execute("SELECT website_url FROM brands WHERE brand_key='legion'").fetchone()
     assert (r["website_url"] or "") == ""
 
 
