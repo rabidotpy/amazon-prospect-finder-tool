@@ -38,8 +38,11 @@ def test_scan_signal_passes_only_flag(monkeypatch):
     class _R:
         stdout = '{"brand_key":"x","status":"ok","did":["meta"],"meta_count":7}'
 
-    monkeypatch.setattr(ad_jobs.subprocess, "run",
-                        lambda cmd, **k: captured.setdefault("cmd", cmd) or _R())
+    def _fake_run(cmd, **k):
+        captured["cmd"] = cmd
+        return _R()
+
+    monkeypatch.setattr(ad_jobs.subprocess, "run", _fake_run)
     out = ad_jobs.scan_signal("x", "meta")
     assert "--only" in captured["cmd"]
     assert captured["cmd"][captured["cmd"].index("--only") + 1] == "meta"
