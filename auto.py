@@ -26,6 +26,7 @@ import config
 import db
 import green
 import pipeline
+import settings
 import worker_status
 
 _STOP = False
@@ -55,7 +56,16 @@ def cycle(conn):
         pipeline.sync_brand_skeleton(conn)
         pipeline.rebuild_sellers(conn)
 
-    keys = brand_scan.stale_brand_keys(conn, limit=SCAN_BATCH)
+    # Respect the live daily scan cap.
+    remaining = settings.remaining_today()
+    if remaining <= 0:
+        green.export_csv(conn)
+        worker_status.write("idle", note=f"daily cap reached "
+                            f"({settings.scanned_today()}/{settings.get_daily_cap()}) "
+                            f"— resumes after midnight or if the cap is raised")
+        return 0
+
+    keys = brand_scan.stale_brand_keys(conn, limit=min(SCAN_BATCH, remaining))
     if not keys:
         green.export_csv(conn)
         worker_status.write("idle", note="all brands fresh — watching ~/Downloads")

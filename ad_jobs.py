@@ -38,6 +38,7 @@ import uuid
 import config
 import db
 import green
+import settings
 
 JOBS_DIR = os.path.join(os.path.dirname(db.DB_PATH), "ad_jobs")
 DEFAULT_CONCURRENCY = 2
@@ -241,10 +242,14 @@ def run_job(job_id, concurrency=None, progress_cb=None):
 
     keys = list(job["brand_keys"])
     idx = 0
+    capped = False
     _tick()
     while idx < len(keys) or running:
-        # top up the pool
-        while len(running) < concurrency and idx < len(keys):
+        # top up the pool — but never exceed the LIVE daily cap. settings.can_scan()
+        # re-reads the cap + today's count every iteration, so lowering the cap
+        # mid-run stops new launches immediately.
+        while (len(running) < concurrency and idx < len(keys)
+               and settings.can_scan()):
             k = keys[idx]
             idx += 1
             cmd = [_PY, _SCAN, "scan", k] + (["--force"] if force else [])
@@ -253,12 +258,18 @@ def run_job(job_id, concurrency=None, progress_cb=None):
             running[p] = k
             started[p] = time.monotonic()
             _tick()
+        # Daily cap reached with nothing left to harvest -> stop; the rest waits
+        # for tomorrow (or for the cap to be raised).
+        if not running and idx < len(keys) and not settings.can_scan():
+            capped = True
+            break
         # enforce per-child deadline
         now = time.monotonic()
         for p in [p for p in list(running) if _expired(started[p], now)]:
             k = running.pop(p)
             started.pop(p, None)
             _kill_tree(p)
+            settings.record_scan(k)     # a timeout still consumed a scan slot
             _record({"brand_key": k, "status": "timeout",
                      "error": f"killed after {CHILD_TIMEOUT}s"}, f"{k}: TIMEOUT")
         # harvest finished
@@ -272,6 +283,8 @@ def run_job(job_id, concurrency=None, progress_cb=None):
             started.pop(p, None)
             stdout, _ = p.communicate()
             outcome = _parse_result(stdout, k)
+            if outcome.get("did"):      # count only brands that did real work today
+                settings.record_scan(k)
             _record(outcome, f"{outcome.get('brand', k)}: {outcome.get('status')} "
                              f"did={outcome.get('did')}")
 
@@ -286,6 +299,10 @@ def run_job(job_id, concurrency=None, progress_cb=None):
 
     job["status"] = "done"
     job["finished_at"] = _now()
+    if capped:
+        job["capped"] = True
+        job["note"] = (f"Stopped at the daily cap ({settings.get_daily_cap()}); "
+                       f"{len(keys) - job['done']} brand(s) left for the next day.")
     _write_job(job)
     _tick()
 

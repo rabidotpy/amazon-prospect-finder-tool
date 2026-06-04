@@ -15,6 +15,7 @@ import streamlit as st
 
 import ad_jobs
 import brand_scan
+import settings
 import worker_status
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -65,6 +66,12 @@ def _worker_panel():
             st.rerun()
         st.caption("…or in a terminal: `./manage.sh start`")
 
+    # Daily scan budget (live cap).
+    done_today, cap = settings.scanned_today(), settings.get_daily_cap()
+    st.caption(f"📊 Scanned today: **{done_today} / {cap}**"
+               + ("  · cap reached" if done_today >= cap else
+                  f"  · {cap - done_today} left"))
+
     # Interrupted jobs: worker died mid-job, leaving 'running'/'queued' job files.
     interrupted = ad_jobs.interrupted_jobs()
     if interrupted and not (alive and s["state"] == "scanning"):
@@ -108,6 +115,20 @@ def render_sidebar(get_conn, bust_caches=lambda: None):
             st.toast(f"Stopped {len(res['stopped'])} job(s), "
                      f"killed {len(res['killed'])} process(es).")
             st.rerun()
+
+        with st.expander("⚙️  Settings"):
+            cur = settings.get_daily_cap()
+            new = st.number_input(
+                "Daily scan cap (brands/day)", min_value=0, max_value=100000,
+                value=cur, step=10,
+                help="Max brands scanned per day across the worker and manual scans. "
+                     "Applied LIVE — lowering it stops a running job once today's "
+                     "count reaches the new value. Resets at midnight.")
+            if int(new) != cur:
+                settings.set_daily_cap(int(new))
+                st.toast(f"Daily cap set to {int(new)}.")
+                st.rerun()
+            st.caption(f"Scanned today: {settings.scanned_today()} / {settings.get_daily_cap()}")
 
         with st.expander("🧹  Maintenance"):
             if st.button("Clear abandoned job data", use_container_width=True):
