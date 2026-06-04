@@ -214,6 +214,33 @@ def scan_signal(brand_key, signal, timeout=200):
     return _parse_result(p.stdout, brand_key)
 
 
+def scan_signal_async(brand_key, signal):
+    """Launch a one-signal refresh in the BACKGROUND so the UI can stream its logs
+    live. Tags every scan_log event with a unique SCAN_TRACE and tees the raw
+    subprocess output to data/refresh_<trace>.log. Returns (trace, raw_path)."""
+    import glob
+    trace = uuid.uuid4().hex[:8]
+    ddir = os.path.dirname(db.DB_PATH)
+    # keep only the 20 most-recent refresh logs
+    for old in sorted(glob.glob(os.path.join(ddir, "refresh_*.log")),
+                      key=os.path.getmtime)[:-20]:
+        try:
+            os.remove(old)
+        except OSError:
+            pass
+    raw = os.path.join(ddir, f"refresh_{trace}.log")
+    env = dict(os.environ)
+    env["SCAN_TRACE"] = trace
+    try:
+        fh = open(raw, "w")
+        subprocess.Popen([_PY, _SCAN, "scan", brand_key, "--only", signal],
+                         cwd=_HERE, stdout=fh, stderr=subprocess.STDOUT,
+                         start_new_session=True, env=env)
+    except Exception:
+        pass
+    return trace, raw
+
+
 def interrupted_jobs():
     """Jobs still marked running/queued — candidates for cleanup when no worker is
     alive (i.e. the worker died mid-job). The dashboard pairs this with the

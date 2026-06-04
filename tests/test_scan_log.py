@@ -31,6 +31,29 @@ def test_clear(sl):
     assert sl.tail() == []
 
 
+def test_trace_tagging_from_env(sl, monkeypatch):
+    monkeypatch.setenv("SCAN_TRACE", "abc123")
+    sl.emit("brand_start", brand="X")
+    monkeypatch.delenv("SCAN_TRACE")
+    sl.emit("brand_start", brand="Y")
+    evs = sl.tail()
+    assert evs[0]["trace"] == "abc123"
+    assert "trace" not in evs[1]
+    mine = [e for e in evs if e.get("trace") == "abc123"]
+    assert len(mine) == 1 and mine[0]["brand"] == "X"
+
+
+def test_format_html_renders_kinds(sl):
+    sl.emit("brand_start", brand="Nutricost", signals=["meta"], revenue=1000, mode="manual")
+    sl.emit("ai_call", purpose="website_research", model="sonnet", ok=True,
+            duration_s=12.0, prompt_chars=900, result='{"website":"x.com"}')
+    sl.emit("brand_done", brand="Nutricost", did=["meta"], status="ok", duration_s=20.0)
+    html = sl.format_html(sl.tail())
+    assert "START" in html and "Nutricost" in html
+    assert "website_research" in html and "sonnet" in html and "DONE" in html
+    assert "<div" not in html        # inner only (no wrapping div)
+
+
 def test_size_cap_truncates(sl, monkeypatch):
     monkeypatch.setattr(sl, "_MAX_BYTES", 2000)
     monkeypatch.setattr(sl, "_KEEP_LINES", 20)
